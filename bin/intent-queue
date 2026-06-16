@@ -1,0 +1,12 @@
+#!/bin/sh
+# intent-queue — thin wrapper that execs the stdlib CLI next to the repo,
+# resolving symlinks so it works when linked onto your PATH:
+#   ln -s "$PWD/bin/intent-queue" ~/bin/intent-queue
+src="$0"
+while [ -h "$src" ]; do
+  dir=$(cd -P "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+dir=$(cd -P "$(dirname "$src")" && pwd)
+exec python3 "$dir/../intent_queue.py" "$@"
