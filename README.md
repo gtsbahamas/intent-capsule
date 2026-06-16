@@ -73,6 +73,23 @@ This repo **is** a Claude Code plugin. Installing it auto-wires the surfacing ho
 
 The plugin's `SessionStart`/`UserPromptSubmit` hooks run `intent-queue pickup` via `${CLAUDE_PLUGIN_ROOT}`, and the `/intent-capsule` skill carries the capture/drain lifecycle and the ask-first rule. For frequent capture you'll still want the CLI on your PATH (above) so `intent-queue add` is one word.
 
+#### Verify your install
+
+After `/plugin install`, confirm it actually loaded:
+
+1. **Plugin enabled** — run `/plugin` and check `intent-capsule` shows as installed/enabled.
+2. **Skill present** — type `/intent-capsule`; the skill should be offered.
+3. **Surfacing works** — queue a throwaway capsule, then start a new session (or send any prompt) and confirm the `## Intent Queue` block appears in context:
+   ```bash
+   printf '@verify-test\ndo: confirm the plugin surfaces capsules\n=: the pickup block shows this id\n' \
+     | INTENT_QUEUE=/tmp/iq-verify.jsonl intent-queue add --source "$(basename "$PWD")"
+   INTENT_QUEUE=/tmp/iq-verify.jsonl intent-queue pickup    # should list verify-test
+   rm /tmp/iq-verify.jsonl
+   ```
+   (Drop the `INTENT_QUEUE=...` overrides to test against your real queue at `~/.claude/intent-queue.jsonl`.)
+
+If the skill is missing or the block never appears, it's almost always a manifest path or a `python3`-not-found issue — check `/plugin` for load errors and that `python3` is on PATH.
+
 ## Usage — the lifecycle
 
 ```bash
