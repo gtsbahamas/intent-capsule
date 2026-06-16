@@ -1,0 +1,23 @@
+{
+  "name": "gts-plugins",
+  "owner": {
+    "name": "Ty Wells"
+  },
+  "metadata": {
+    "description": "Claude Code plugins by Ty Wells",
+    "homepage": "https://github.com/gtsbahamas/intent-capsule"
+  },
+  "plugins": [
+    {
+      "name": "intent-capsule",
+      "source": ".",
+      "version": "0.1.0",
+      "description": "Capture work intent at peak context, then surface and replay it in a fresh session — ask-first, never auto-run.",
+      "author": {
+        "name": "Ty Wells"
+      },
+      "license": "MIT",
+      "keywords": ["intent", "handoff", "context", "memory", "queue", "session"]
+    }
+  ]
+}

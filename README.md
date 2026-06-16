@@ -67,8 +67,8 @@ The queue is a JSONL file. Default `~/.claude/intent-queue.jsonl`; override with
 This repo **is** a Claude Code plugin. Installing it auto-wires the surfacing hook and ships the ask-first skill, so a fresh session shows pending capsules and offers to drain them with no manual `settings.json` edits:
 
 ```
-/plugin marketplace add <your-org>/intent-capsule
-/plugin install intent-capsule
+/plugin marketplace add gtsbahamas/intent-capsule
+/plugin install intent-capsule@gts-plugins
 ```
 
 The plugin's `SessionStart`/`UserPromptSubmit` hooks run `intent-queue pickup` via `${CLAUDE_PLUGIN_ROOT}`, and the `/intent-capsule` skill carries the capture/drain lifecycle and the ask-first rule. For frequent capture you'll still want the CLI on your PATH (above) so `intent-queue add` is one word.
