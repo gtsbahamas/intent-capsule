@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    {"id": "auth-flow", "note": "email + password sign-in", "status": "done"},
+    {"id": "dark-mode", "note": "toggle persisted to localStorage", "status": "wip"},
+    {"id": "csv-export", "note": "export filtered table", "status": "pend"},
+    {"id": "rate-limit", "note": "per-IP sliding window", "status": "pend"},
+    {"id": "file-upload", "note": "drag-and-drop with progress", "status": "block"},
+    {"id": "search-index", "note": "full-text over docs", "status": "pend"},
+    {"id": "pagination", "note": "cursor-based list paging", "status": "done"},
+    {"id": "settings-page", "note": "user preferences screen", "status": "wip"},
+    {"id": "email-digest", "note": "weekly summary mailer", "status": "pend"},
+    {"id": "audit-log", "note": "append-only action trail", "status": "pend"},
+    {"id": "webhook-receiver", "note": "verify HMAC, enqueue", "status": "block"},
+    {"id": "feature-flags", "note": "per-tenant toggles", "status": "pend"},
+    {"id": "task-1", "note": "scaffold project", "status": "done"},
+    {"id": "task-2", "note": "wire CI", "status": "done"},
+    {"id": "task-3", "note": "seed database", "status": "pend"},
+    {"id": "task-4", "note": "error boundary", "status": "pend"},
+    {"id": "task-5", "note": "loading states", "status": "pend"},
+    {"id": "task-6", "note": "empty states", "status": "pend"},
+    {"id": "task-7", "note": "toast notifications", "status": "pend"},
+    {"id": "task-8", "note": "keyboard shortcuts", "status": "pend"}
+  ]
+}

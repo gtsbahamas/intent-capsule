@@ -1,0 +1,13 @@
+@csv-export
+do: Export the currently-filtered data table to CSV from the table toolbar.
+in: components/DataTable/Toolbar.tsx; lib/exportCsv.ts (new); the table's filter+sort store
+on: the existing client-side filter/sort state; the column-visibility config
+!: the export MUST reflect the ACTIVE filters and the CURRENT column order/visibility — not the full unfiltered dataset
+!: stream/iterate rows; do not materialize the whole table in memory (tables can be 100k+ rows)
+~: prefer a Web Worker for the serialize step so the UI thread doesn't jank on large exports
+?: only show the Export button when the table has >0 rows after filtering
+=: with two filters applied, the downloaded file contains ONLY matching rows
+=: column order in the CSV header matches the on-screen column order, hidden columns excluded
+=: a 50k-row export completes without freezing the UI (button shows a progress/disabled state)
+why: users export to hand a colleague "what I'm looking at right now" — an export that ignores
+     the active filters silently produces the wrong file and they don't notice until it's emailed.
