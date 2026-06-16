@@ -1,0 +1,10 @@
+{
+  "name": "intent-capsule",
+  "version": "0.1.0",
+  "description": "Capture work intent at peak context, then surface and replay it in a fresh session. A context-less session sees queued capsules on startup and offers to drain the oldest — ask-first, never auto-run.",
+  "author": {
+    "name": "Ty Wells"
+  },
+  "license": "MIT",
+  "keywords": ["intent", "handoff", "context", "memory", "queue", "session"]
+}

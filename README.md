@@ -62,6 +62,17 @@ ln -s "$PWD/intent_queue.py" ~/bin/intent-queue   # or: alias intent-queue="pyth
 
 The queue is a JSONL file. Default `~/.claude/intent-queue.jsonl`; override with `INTENT_QUEUE=/path/to/queue.jsonl`.
 
+### Or install as a Claude Code plugin (zero-config surfacing)
+
+This repo **is** a Claude Code plugin. Installing it auto-wires the surfacing hook and ships the ask-first skill, so a fresh session shows pending capsules and offers to drain them with no manual `settings.json` edits:
+
+```
+/plugin marketplace add <your-org>/intent-capsule
+/plugin install intent-capsule
+```
+
+The plugin's `SessionStart`/`UserPromptSubmit` hooks run `intent-queue pickup` via `${CLAUDE_PLUGIN_ROOT}`, and the `/intent-capsule` skill carries the capture/drain lifecycle and the ask-first rule. For frequent capture you'll still want the CLI on your PATH (above) so `intent-queue add` is one word.
+
 ## Usage — the lifecycle
 
 ```bash
@@ -121,6 +132,10 @@ harness.py           # plan-ops fidelity harness (grammar v1/v2/v3, McNemar, Wil
 intent_capsule.py    # implementation-intent fidelity harness (author -> encode -> cold replay -> judge)
 example_plan.json    # synthetic plan the harness reads (override with PLAN_PATH)
 examples/            # a complete example capsule
+bin/intent-queue     # PATH wrapper (symlink onto your PATH)
+.claude-plugin/      # Claude Code plugin manifest
+hooks/               # hooks.json (plugin auto-wiring) + a standalone hook + integration guide
+skills/intent-capsule/  # the /intent-capsule skill (capture/drain lifecycle, ask-first doctrine)
 ```
 
 ## Where it generalizes
