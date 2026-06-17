@@ -104,6 +104,10 @@ class FindCycles(unittest.TestCase):
         items = [_cap("a", on="b"), _cap("b", on="a", status="done")]
         self.assertEqual(iq._find_cycles(items), [])
 
+    def test_three_node_cycle_broken_by_done_node(self):
+        items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c", on="a", status="done")]
+        self.assertEqual(iq._find_cycles(items), [])
+
 
 class NextGating(unittest.TestCase):
     def setUp(self):
@@ -156,6 +160,18 @@ class NextGating(unittest.TestCase):
         self.assertIn("dependency cycle", out)
         self.assertNotIn("# intent capsule", out)
 
+    def test_dep_gating_is_cross_project(self):
+        a = _cap("a", on="b"); a["source"] = "projX"
+        b = _cap("b");         b["source"] = "projY"
+        self._seed([a, b])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_next(project="projX")
+        out = buf.getvalue()
+        self.assertIn("all blocked", out)
+        self.assertIn("waiting on: b", out)
+        self.assertNotIn("intent capsule 'a'", out)
+
 
 class PickupSplit(unittest.TestCase):
     def setUp(self):
@@ -184,10 +200,15 @@ class PickupSplit(unittest.TestCase):
         self.assertRegex(out, r"(?s)Blocked.*\*\*a\*\*")
         self.assertIn("waiting on b", out)
 
-    def test_unknown_dep_note_emitted(self):
-        iq.save([_cap("a", on="ghost")])
-        out = self._pickup()
-        self.assertIn("unknown id 'ghost'", out)
+    def test_typo_dep_surfaced_only_alongside_a_real_dep(self):
+        # b is a real queued id; ghost is a typo -> ghost surfaces as a note
+        iq.save([_cap("a", on="b ghost"), _cap("b")])
+        self.assertIn("unknown id 'ghost'", self._pickup())
+
+    def test_pure_free_text_on_emits_no_notes(self):
+        # no token matches a queued id -> treated as prose, silent (no per-word spam)
+        iq.save([_cap("solo", on="the auth module and csv exporter")])
+        self.assertNotIn("unknown id", self._pickup())
 
     def test_cycle_reported(self):
         iq.save([_cap("a", on="b"), _cap("b", on="a")])

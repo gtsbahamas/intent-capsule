@@ -582,7 +582,11 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
         for it in sorted(mine, key=lambda x: x["created"]):
             c = _classify(it, smap)
             (ready if c["ready"] else blocked).append((it, c))
-            notes += [(it["id"], u) for u in c["unknown"]]
+            # surface unknown-dep notes only when the capsule names at least one REAL
+            # queued id (it intends id-gating). Pure free-text on: prose stays silent
+            # instead of emitting one noise note per word.
+            if c["unknown"] and any(t in smap for t in _dep_tokens(it.get("parsed", {}).get("on", ""))):
+                notes += [(it["id"], u) for u in c["unknown"]]
         if ready:
             print("Ready now:")
             for it, _c in ready:
