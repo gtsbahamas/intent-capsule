@@ -52,6 +52,16 @@ def _age_min(iso):
     except Exception:
         return float("inf")
 
+def _dep_tokens(on_str):
+    """Tokenize an `on:` string into candidate dependency tokens.
+
+    Splits on commas and whitespace. Ids are case-sensitive (no lowercasing),
+    so hyphenated capsule ids survive intact. Embedded prose is harmless: only
+    tokens that later match a queued id gate anything (see _classify)."""
+    if not on_str:
+        return []
+    return [t for t in re.split(r"[,\s]+", on_str.strip()) if t]
+
 def parse_capsule(text):
     """v-intent capsule -> {id, do, in, on, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
 
