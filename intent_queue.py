@@ -306,7 +306,8 @@ def read_input(file):
 def load():
     if not os.path.exists(QUEUE):
         return []
-    return [json.loads(l) for l in open(QUEUE) if l.strip()]
+    with open(QUEUE) as f:
+        return [json.loads(l) for l in f if l.strip()]
 
 def save(items):
     with open(QUEUE, "w") as f:
