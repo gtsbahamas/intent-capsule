@@ -31,7 +31,7 @@ Usage:
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
 Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
 """
-import os, sys, re, json, argparse, subprocess
+import os, sys, re, json, argparse, subprocess, tempfile
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -351,9 +351,40 @@ def load():
         return [json.loads(l) for l in f if l.strip()]
 
 def save(items):
-    with open(QUEUE, "w") as f:
-        for it in items:
-            f.write(json.dumps(it) + "\n")
+    """Atomically replace the queue file.
+
+    Writes a sibling temp file in the SAME directory (so os.replace is a same-
+    filesystem rename, which is atomic on POSIX), fsyncs the data before the
+    rename, then fsyncs the directory so the rename itself is durable. A crash at
+    any point before os.replace leaves the OLD queue fully intact — never a
+    truncated/half-written file. Output is byte-identical to the old direct write
+    (one JSON object per line, trailing newline)."""
+    d = os.path.dirname(QUEUE) or "."
+    os.makedirs(d, exist_ok=True)                 # ?: ensure the queue dir exists
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".intent-queue.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for it in items:
+                f.write(json.dumps(it) + "\n")
+            f.flush()
+            os.fsync(f.fileno())                  # data durable before the rename
+        os.replace(tmp, QUEUE)                    # atomic on POSIX (same dir)
+    except BaseException:
+        # never leave the tmp behind if we failed before/at the replace
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    # fsync the directory so the rename entry itself survives a crash
+    try:
+        dfd = os.open(d, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 def cmd_validate(text, strict=False, plan_ids=None):
     parsed = parse_capsule(text)
