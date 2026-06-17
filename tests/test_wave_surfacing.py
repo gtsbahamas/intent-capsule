@@ -149,6 +149,13 @@ class NextGating(unittest.TestCase):
         # status untouched: a is still pending
         self.assertEqual(iq._select(iq.load(), "a")["status"], "pending")
 
+    def test_blocked_cycle_reported(self):
+        a = _cap("a", on="b"); b = _cap("b", on="a")
+        self._seed([a, b])
+        out = self._next()
+        self.assertIn("dependency cycle", out)
+        self.assertNotIn("# intent capsule", out)
+
 
 if __name__ == "__main__":
     unittest.main()
