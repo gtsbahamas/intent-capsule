@@ -53,7 +53,7 @@ def _age_min(iso):
         return float("inf")
 
 def _dep_tokens(on_str):
-    """Tokenize an `on:` string into candidate dependency tokens.
+    """Tokenize a dependency-token string (the value of a `needs:` field).
 
     Splits on commas and whitespace. Ids are case-sensitive (no lowercasing),
     so hyphenated capsule ids survive intact. Embedded prose is harmless: only
@@ -318,7 +318,7 @@ def cmd_validate(text, strict=False, plan_ids=None):
     parsed = parse_capsule(text)
     errs, warns = check(parsed)
     print(f"id: {parsed.get('id','(none)')}   do: {parsed.get('do','(none)')[:60]}")
-    print(f"  in:{'Y' if parsed.get('in') else '—'} on:{'Y' if parsed.get('on') else '—'} "
+    print(f"  in:{'Y' if parsed.get('in') else '—'} needs:{'Y' if parsed.get('needs') else '—'} on:{'Y' if parsed.get('on') else '—'} "
           f"why:{'Y' if parsed.get('why') else '—'} gate:{'Y' if parsed.get('?') else '—'} "
           f"constraints:{len(parsed.get('!',[]))} accept:{len(parsed.get('=',[]))}")
     for w in warns: print(f"  warn:  {w}")
@@ -396,7 +396,7 @@ def _scope(pend, show_all, project):
     return proj, mine, others
 
 def _print_scope_cycles(items, mine_ids):
-    """Print on: dependency-cycle deadlocks, but only cycles that involve an
+    """Print needs: dependency-cycle deadlocks, but only cycles that involve an
     in-scope capsule (so a multi-project queue doesn't surface other projects')."""
     for cyc in _find_cycles(items):
         if any(n in mine_ids for n in cyc):
@@ -582,8 +582,8 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
         for it in sorted(mine, key=lambda x: x["created"]):
             c = _classify(it, smap)
             (ready if c["ready"] else blocked).append((it, c))
-            # surface unknown-dep notes only when the capsule names at least one REAL
-            # queued id (it intends id-gating). Pure free-text on: prose stays silent
+            # surface unknown-dep notes only when needs: names at least one REAL
+            # queued id (id-gating intended). Pure free-text needs: prose stays silent
             # instead of emitting one noise note per word.
             if c["unknown"] and any(t in smap for t in _dep_tokens(it.get("parsed", {}).get("needs", ""))):
                 notes += [(it["id"], u) for u in c["unknown"]]

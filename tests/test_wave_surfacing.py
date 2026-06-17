@@ -3,10 +3,11 @@
 Wave-surfacing tests (stdlib unittest only — zero new deps).
 
 Covers the four pure helpers (_dep_tokens, _status_map, _classify, _find_cycles)
-and the gating behavior wired into `next` and `pickup`: a capsule whose `on:`
+and the gating behavior wired into `next` and `pickup`: a capsule whose `needs:`
 names an unfinished queued capsule is blocked; finishing the dep unblocks it;
 dropped deps and dependency cycles are surfaced, never silently hidden; and
-`on:` tokens matching no queued id stay non-gating (backward compatibility).
+`on:` is now provenance-only prose; `needs:` tokens matching no queued id stay
+non-gating (backward compatibility).
 
 Run:  python3 -m unittest discover -s tests
   or: python3 tests/test_wave_surfacing.py
