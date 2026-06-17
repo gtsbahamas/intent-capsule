@@ -290,5 +290,27 @@ class GrammarFields(unittest.TestCase):
         self.assertEqual(errs, [])  # neither is required
 
 
+class GroupRollup(unittest.TestCase):
+    def test_counts_by_group_across_statuses(self):
+        items = [
+            _cap("s1", group="shipsafe", status="done"),
+            _cap("s2", group="shipsafe", status="done"),
+            _cap("s3", group="shipsafe"),                       # ready (no needs)
+            _cap("s4", group="shipsafe", needs="s3"),           # blocked on s3
+            _cap("s5", group="shipsafe", status="dropped"),
+            _cap("m1", group="mgo"),                            # ready
+            _cap("u1"),                                         # ungrouped -> excluded
+        ]
+        smap = iq._status_map(items)
+        roll = iq._group_rollup(items, smap)
+        # sorted by group name: mgo, shipsafe
+        self.assertEqual(roll[0], ("mgo", 0, 1, 1, 0, 0))
+        self.assertEqual(roll[1], ("shipsafe", 2, 5, 1, 1, 1))
+
+    def test_no_groups_returns_empty(self):
+        items = [_cap("a"), _cap("b", needs="a")]
+        self.assertEqual(iq._group_rollup(items, iq._status_map(items)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

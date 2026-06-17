@@ -138,6 +138,30 @@ def _find_cycles(items):
             dfs(n)
     return cycles
 
+def _group_rollup(items, status_map):
+    """Per-group progress over `items` that carry a group: label. Returns a list of
+    (group, done, total, ready, blocked, dropped) sorted by group name. Ungrouped
+    capsules are excluded. `total` counts every status; ready/blocked are computed
+    via _classify for the non-done, non-dropped members."""
+    groups = {}
+    for it in items:
+        g = it.get("parsed", {}).get("group")
+        if not g:
+            continue
+        d = groups.setdefault(g, {"done": 0, "total": 0, "ready": 0, "blocked": 0, "dropped": 0})
+        d["total"] += 1
+        st = it["status"]
+        if st == "done":
+            d["done"] += 1
+        elif st == "dropped":
+            d["dropped"] += 1
+        elif _classify(it, status_map)["ready"]:
+            d["ready"] += 1
+        else:
+            d["blocked"] += 1
+    return [(g, v["done"], v["total"], v["ready"], v["blocked"], v["dropped"])
+            for g, v in sorted(groups.items())]
+
 def parse_capsule(text):
     """v-intent capsule -> {id, do, in, on, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
 
