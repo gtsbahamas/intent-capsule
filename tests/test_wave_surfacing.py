@@ -3,10 +3,10 @@
 Wave-surfacing tests (stdlib unittest only — zero new deps).
 
 Covers the four pure helpers (_dep_tokens, _status_map, _classify, _find_cycles)
-and the gating behavior wired into `next` and `pickup`: a capsule whose `needs:`
-names an unfinished queued capsule is blocked; finishing the dep unblocks it;
-dropped deps and dependency cycles are surfaced, never silently hidden; and
-`on:` is now provenance-only prose; `needs:` tokens matching no queued id stay
+and the gating behavior wired into `next` and `pickup`: a capsule whose `on:`
+(or `needs:`) names an unfinished queued capsule is blocked; finishing the dep
+unblocks it; dropped deps and dependency cycles are surfaced, never silently
+hidden; and tokens matching no queued id (free-text provenance in `on:`) stay
 non-gating (backward compatibility).
 
 Run:  python3 -m unittest discover -s tests
@@ -258,11 +258,20 @@ class GatingMigration(unittest.TestCase):
         iq.QUEUE = self._orig
         os.unlink(self.tmp.name)
 
-    def test_on_no_longer_gates(self):
-        # a:on=b (provenance), b pending. Post-migration on: does NOT gate -> a is served.
+    def test_on_gates(self):
+        # a:on=b, b pending. on: GATES -> a is blocked on b; the dep b is served first.
         a = _cap("a", on="b"); a["created"] = "2026-06-17T00:00:00+00:00"
         b = _cap("b");         b["created"] = "2026-06-17T01:00:00+00:00"
         iq.save([a, b])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_next(show_all=True)
+        self.assertIn("intent capsule 'b'", buf.getvalue())  # b served, a blocked on its on: dep
+
+    def test_on_free_text_still_non_gating(self):
+        # a:on="some prose" (no token matches a queued id) -> a is NOT gated, a is served.
+        a = _cap("a", on="live deploy commit 39db680")
+        iq.save([a])
         buf = io.StringIO()
         with redirect_stdout(buf):
             iq.cmd_next(show_all=True)

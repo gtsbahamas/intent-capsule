@@ -12,11 +12,13 @@ treats the grammar as a CONTRACT — capsules missing required fields are reject
 capture, when context is fresh and the gap is cheap to fix.
 
 Grammar:
-  @<id>  do: <build>  in: <files/layer>  needs: <capsule-ids>  group: <label>  on: <provenance>
+  @<id>  do: <build>  in: <files/layer>  on: <capsule-ids/provenance>  needs: <capsule-ids>  group: <label>
   !: <hard constraint>  ~: <soft pref>  ?: <gate>  =: <acceptance>  why: <nuance>
 
-  needs: gates surfacing (a capsule waits until its needs-ids are done).
-  group: organizational label for the pickup rollup. on: is provenance prose (not gated).
+  on:    dependency list — a capsule is BLOCKED from pickup/next until every task
+         named in on: is done. Free-text provenance is safe: tokens matching no
+         queued id are non-gating. (needs: also gates, kept for back-compat.)
+  group: organizational label for the pickup rollup.
 
 Usage:
   intent-queue add [--source S] [--file F]      # F, else stdin, else clipboard (pbpaste)
@@ -56,7 +58,7 @@ def _age_min(iso):
         return float("inf")
 
 def _dep_tokens(on_str):
-    """Tokenize a dependency-token string (the value of a `needs:` field).
+    """Tokenize a dependency-token string (the value of a dependency field).
 
     Splits on commas and whitespace. Ids are case-sensitive (no lowercasing),
     so hyphenated capsule ids survive intact. Embedded prose is harmless: only
@@ -64,6 +66,16 @@ def _dep_tokens(on_str):
     if not on_str:
         return []
     return [t for t in re.split(r"[,\s]+", on_str.strip()) if t]
+
+def _dep_fields(parsed):
+    """The combined dependency-bearing text for a parsed capsule.
+
+    Gating draws from BOTH `on:` and `needs:`: a capsule waits until every task
+    named in either field is done. `on:` is the user-facing dependency list;
+    `needs:` is kept for back-compat. Free-text provenance in `on:` (e.g. a
+    commit hash, "none", a sentence) is safe — tokens that match no queued id are
+    classified `unknown` and never gate (see _classify)."""
+    return " ".join(parsed.get(f, "") or "" for f in ("on", "needs"))
 
 def _status_map(items):
     """id -> status over the entire queue. If an id appears more than once
@@ -88,7 +100,7 @@ def _classify(item, status_map):
       unknown - tokens matching no queued id (non-gating; informational)
     ready == no waiting and no dead."""
     waiting, dead, unknown = [], [], []
-    for tok in _dep_tokens(item.get("parsed", {}).get("needs", "")):
+    for tok in _dep_tokens(_dep_fields(item.get("parsed", {}))):
         st = status_map.get(tok)
         if st is None:
             unknown.append(tok)
@@ -113,7 +125,7 @@ def _find_cycles(items):
     for it in items:
         if it["status"] not in ("pending", "in_progress"):
             continue
-        adj[it["id"]] = [t for t in _dep_tokens(it.get("parsed", {}).get("needs", "")) if t in active]
+        adj[it["id"]] = [t for t in _dep_tokens(_dep_fields(it.get("parsed", {}))) if t in active]
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {n: WHITE for n in adj}
     stack, cycles, seen = [], [], set()
@@ -621,10 +633,10 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
         for it in sorted(mine, key=lambda x: x["created"]):
             c = _classify(it, smap)
             (ready if c["ready"] else blocked).append((it, c))
-            # surface unknown-dep notes only when needs: names at least one REAL
-            # queued id (id-gating intended). Pure free-text needs: prose stays silent
+            # surface unknown-dep notes only when on:/needs: names at least one REAL
+            # queued id (id-gating intended). Pure free-text provenance stays silent
             # instead of emitting one noise note per word.
-            if c["unknown"] and any(t in smap for t in _dep_tokens(it.get("parsed", {}).get("needs", ""))):
+            if c["unknown"] and any(t in smap for t in _dep_tokens(_dep_fields(it.get("parsed", {})))):
                 notes += [(it["id"], u) for u in c["unknown"]]
         if ready:
             print("Ready now:")
@@ -643,7 +655,7 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
                     bits.append("dead deps (dropped): " + ", ".join(c["dead"]))
                 print(f"- **{it['id']}** — {it['parsed'].get('do','')[:70]}  ({'; '.join(bits)})")
         for cid, u in notes:
-            print(f"  note: {cid}: needs: references unknown id {u!r} (non-gating)")
+            print(f"  note: {cid}: on:/needs: references unknown id {u!r} (non-gating)")
         _print_scope_cycles(items, {it["id"] for it in mine})
         if ready:
             print(f"\nRun `intent-queue next` to drain the oldest ready capsule.")
