@@ -73,6 +73,28 @@ def _status_map(items):
             m[id_] = st
     return m
 
+def _classify(item, status_map):
+    """Blocker analysis for one capsule against the queue's id->status map.
+
+    Returns {ready, waiting, dead, unknown}:
+      waiting - dep ids that exist but aren't done (pending/in_progress)
+      dead    - dep ids whose capsule was dropped (unsatisfiable)
+      unknown - tokens matching no queued id (non-gating; informational)
+    ready == no waiting and no dead."""
+    waiting, dead, unknown = [], [], []
+    for tok in _dep_tokens(item.get("parsed", {}).get("on", "")):
+        st = status_map.get(tok)
+        if st is None:
+            unknown.append(tok)
+        elif st == "done":
+            continue
+        elif st == "dropped":
+            dead.append(tok)
+        else:                                    # pending / in_progress
+            waiting.append(tok)
+    return {"ready": not waiting and not dead,
+            "waiting": waiting, "dead": dead, "unknown": unknown}
+
 def parse_capsule(text):
     """v-intent capsule -> {id, do, in, on, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
 
