@@ -12,8 +12,11 @@ treats the grammar as a CONTRACT — capsules missing required fields are reject
 capture, when context is fresh and the gap is cheap to fix.
 
 Grammar:
-  @<id>     do: <build>   in: <files/layer>   on: <deps>
+  @<id>  do: <build>  in: <files/layer>  needs: <capsule-ids>  group: <label>  on: <provenance>
   !: <hard constraint>  ~: <soft pref>  ?: <gate>  =: <acceptance>  why: <nuance>
+
+  needs: gates surfacing (a capsule waits until its needs-ids are done).
+  group: organizational label for the pickup rollup. on: is provenance prose (not gated).
 
 Usage:
   intent-queue add [--source S] [--file F]      # F, else stdin, else clipboard (pbpaste)

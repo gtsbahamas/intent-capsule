@@ -20,13 +20,28 @@ A normal note doesn't fix this, because people told to "be brief" silently drop 
 A capsule is a note with **labeled boxes you're not allowed to leave blank**. It's written in a terse shorthand of words/symbols the model already knows (in-distribution — a brand-new symbol language was tested and *hurts* comprehension), and the legend is taught once in a cached prefix so the teaching cost is paid at a ~90% discount.
 
 ```
-@<id>  do: <one-line: what to build>   in: <files/layer>   on: <deps/ids>
+@<id>  do: <one-line: what to build>   in: <files/layer>   needs: <capsule-ids>   group: <label>   on: <provenance>
 !: <hard constraint>   ~: <soft pref>   ?: <gate>   =: <acceptance>   why: <the nuance>
 ```
 
 - **Required:** `id`, `do`, and at least one `=` (acceptance). The queue *rejects* a capsule missing these — at capture, while context is fresh and the gap is cheap to fix.
 - **Recommended:** `in`, `why`.
-- Repeatable: `!`, `~`, `=` (one rule/criterion per line). Single: `do`, `in`, `on`, `?`, `why`.
+- Repeatable: `!`, `~`, `=` (one rule/criterion per line). Single: `do`, `in`, `on`, `needs`, `group`, `?`, `why`.
+
+### Fields
+
+| Field | Role | Notes |
+|---|---|---|
+| `do:` | What to build (required) | One line. |
+| `in:` | Files or layer the work lives in | Recommended. |
+| `needs:` | Space/comma-separated capsule ids this capsule depends on | **Gates surfacing** — a capsule stays hidden in `next`/`pickup` until all its `needs:` ids are `done`. |
+| `group:` | Organizational label | `pickup` prints a per-group progress rollup, e.g. `shipsafe — 4/10 done (2 ready, 4 blocked)`. |
+| `on:` | Provenance prose | Context the executor needs ("what to know before starting"). **Not gated** — does not block surfacing. |
+| `!:` | Hard constraint | Repeatable. |
+| `~:` | Soft preference | Repeatable. |
+| `?:` | Gate/prerequisite question | |
+| `=:` | Acceptance criterion | Repeatable (required ≥ 1). Attested one-for-one by `done --proof`. |
+| `why:` | The nuance | Recommended — load-bearing context that prose drops. |
 
 See [`examples/example-capsule.txt`](examples/example-capsule.txt) for a full one.
 
