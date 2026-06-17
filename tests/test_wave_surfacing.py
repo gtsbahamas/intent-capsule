@@ -328,6 +328,19 @@ class PickupRollup(unittest.TestCase):
         self.assertIn("shipsafe — 0/1 done (1 ready)", out)
         self.assertIn("**plain**", out)   # ungrouped still shown in Ready now
 
+    def test_all_done_group_has_no_parenthetical(self):
+        iq.save([_cap("d1", group="done-grp", status="done"),
+                 _cap("d2", group="done-grp", status="done"),
+                 _cap("live", group="other")])  # pending work so pickup doesn't early-return
+        self.assertIn("done-grp — 2/2 done", self._pickup())
+        self.assertNotIn("done-grp — 2/2 done (", self._pickup())
+
+    def test_all_dropped_group_shows_dropped_count(self):
+        iq.save([_cap("x1", group="dead-grp", status="dropped"),
+                 _cap("x2", group="dead-grp", status="dropped"),
+                 _cap("live", group="other")])  # second group so pickup has pending work to show
+        self.assertIn("dead-grp — 0/2 done (2 dropped)", self._pickup())
+
 
 class GroupRollup(unittest.TestCase):
     def test_counts_by_group_across_statuses(self):

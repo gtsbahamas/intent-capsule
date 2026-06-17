@@ -138,9 +138,11 @@ def _find_cycles(items):
             dfs(n)
     return cycles
 
+GroupRow = namedtuple("GroupRow", "group done total ready blocked dropped")
+
 def _group_rollup(items, status_map):
     """Per-group progress over `items` that carry a group: label. Returns a list of
-    (group, done, total, ready, blocked, dropped) sorted by group name. Ungrouped
+    GroupRow(group, done, total, ready, blocked, dropped) sorted by group name. Ungrouped
     capsules are excluded. `total` counts every status; ready/blocked are computed
     via _classify for the non-done, non-dropped members."""
     groups = {}
@@ -159,7 +161,7 @@ def _group_rollup(items, status_map):
             d["ready"] += 1
         else:
             d["blocked"] += 1
-    return [(g, v["done"], v["total"], v["ready"], v["blocked"], v["dropped"])
+    return [GroupRow(g, v["done"], v["total"], v["ready"], v["blocked"], v["dropped"])
             for g, v in sorted(groups.items())]
 
 def parse_capsule(text):
@@ -601,13 +603,15 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     print(f"## Intent Queue {scope_label} — {len(mine)} pending"
           + (f", {len(orph_mine)} orphaned" if orph_mine else "") + " capsule(s)\n")
     smap = _status_map(items)
+    # re-scope all statuses for the rollup (_scope only covers pending; rollup needs done/dropped too)
     scoped = [it for it in items if it.get("source") == proj] if proj else items
     rollup = _group_rollup(scoped, smap)
     if rollup:
         print("Groups:")
-        for g, done, total, ready, blocked, dropped in rollup:
-            extra = [f"{n} {lbl}" for n, lbl in ((ready, "ready"), (blocked, "blocked"), (dropped, "dropped")) if n]
-            print(f"- {g} — {done}/{total} done" + (f" ({', '.join(extra)})" if extra else ""))
+        for r in rollup:
+            extra = [f"{n} {lbl}" for n, lbl in
+                     ((r.ready, "ready"), (r.blocked, "blocked"), (r.dropped, "dropped")) if n]
+            print(f"- {r.group} — {r.done}/{r.total} done" + (f" ({', '.join(extra)})" if extra else ""))
         print()
     if mine:
         ready, blocked, notes = [], [], []
