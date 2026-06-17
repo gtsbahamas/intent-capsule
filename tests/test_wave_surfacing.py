@@ -105,5 +105,50 @@ class FindCycles(unittest.TestCase):
         self.assertEqual(iq._find_cycles(items), [])
 
 
+class NextGating(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        self.tmp.close()
+        self._orig = iq.QUEUE
+        iq.QUEUE = self.tmp.name
+
+    def tearDown(self):
+        iq.QUEUE = self._orig
+        os.unlink(self.tmp.name)
+
+    def _seed(self, items):
+        iq.save(items)
+
+    def _next(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_next(show_all=True)        # show_all avoids project-scope filtering in tests
+        return buf.getvalue()
+
+    def test_serves_dep_before_dependent(self):
+        # a depends on b; both pending -> next must serve b, not a
+        a = _cap("a", on="b"); a["created"] = "2026-06-17T00:00:00+00:00"
+        b = _cap("b");         b["created"] = "2026-06-17T01:00:00+00:00"  # b newer
+        self._seed([a, b])
+        out = self._next()
+        self.assertIn("intent capsule 'b'", out)
+        self.assertNotIn("intent capsule 'a'", out)
+
+    def test_dependent_served_after_dep_done(self):
+        a = _cap("a", on="b"); b = _cap("b", status="done")
+        self._seed([a, b])
+        self.assertIn("intent capsule 'a'", self._next())
+
+    def test_all_blocked_reports_and_serves_nothing(self):
+        a = _cap("a", on="b"); b = _cap("b", status="in_progress")
+        self._seed([a, b])
+        out = self._next()
+        self.assertIn("all blocked", out)
+        self.assertIn("waiting on: b", out)
+        self.assertNotIn("# intent capsule", out)
+        # status untouched: a is still pending
+        self.assertEqual(iq._select(iq.load(), "a")["status"], "pending")
+
+
 if __name__ == "__main__":
     unittest.main()

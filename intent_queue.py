@@ -419,12 +419,28 @@ def cmd_next(show_all=False, project=None, strict=False, plan_ids=None):
     proj, mine, others = _scope(pend, show_all, project)
     # 1) Serve pending work in scope first — never preempt a live queue.
     if mine:
-        nxt = sorted(mine, key=lambda x: x["created"])[0]
-        if _strict_gate(nxt, strict, plan_ids):
-            return 1                                         # blocked; status untouched (not saved)
-        nxt["status"] = "in_progress"; nxt["started"] = now()
-        save(items)
-        _emit_capsule(nxt)
+        smap = _status_map(items)
+        ready = [it for it in mine if _classify(it, smap)["ready"]]
+        if ready:
+            nxt = sorted(ready, key=lambda x: x["created"])[0]
+            if _strict_gate(nxt, strict, plan_ids):
+                return 1                                     # blocked; status untouched (not saved)
+            nxt["status"] = "in_progress"; nxt["started"] = now()
+            save(items)
+            _emit_capsule(nxt)
+            return 0
+        # pending exist in scope but none are ready: report what they wait on and
+        # exit WITHOUT flipping status or preempting via orphan reclaim.
+        waiting = sorted({d for it in mine for d in _classify(it, smap)["waiting"]})
+        dead = sorted({d for it in mine for d in _classify(it, smap)["dead"]})
+        msg = f"({len(mine)} pending in scope, all blocked"
+        if waiting:
+            msg += f" — waiting on: {', '.join(waiting)}"
+        if dead:
+            msg += f"; dead deps (dropped): {', '.join(dead)}"
+        print(msg + ")")
+        for cyc in _find_cycles(items):
+            print(f"  ⚠ dependency cycle (deadlock): " + " -> ".join(cyc) + f" -> {cyc[0]}")
         return 0
     # 2) No pending in scope -> auto-reclaim the oldest eligible orphan IN SCOPE, so a crashed
     #    capsule resurfaces through ordinary `next` consumption (not a manual reap step).
