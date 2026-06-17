@@ -168,7 +168,7 @@ def _group_rollup(items, status_map):
             for g, v in sorted(groups.items())]
 
 def parse_capsule(text):
-    """v-intent capsule -> {id, do, in, on, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
+    """v-intent capsule -> {id, do, in, on, needs, group, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
 
     Blank tag values are treated as ABSENT (a bare `=:` is not an acceptance criterion).
     A SINGLE field repeated is recorded in _dupes (it would silently overwrite)."""
