@@ -62,6 +62,17 @@ def _dep_tokens(on_str):
         return []
     return [t for t in re.split(r"[,\s]+", on_str.strip()) if t]
 
+def _status_map(items):
+    """id -> status over the entire queue. If an id appears more than once
+    (a finished row plus a re-queued active one), prefer the ACTIVE status so a
+    dependency is not treated as satisfied by a stale `done` row."""
+    m = {}
+    for it in items:
+        id_, st = it["id"], it["status"]
+        if id_ not in m or (m[id_] in ("done", "dropped") and st in ("pending", "in_progress")):
+            m[id_] = st
+    return m
+
 def parse_capsule(text):
     """v-intent capsule -> {id, do, in, on, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
 

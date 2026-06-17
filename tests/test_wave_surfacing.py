@@ -31,5 +31,16 @@ class DepTokens(unittest.TestCase):
         self.assertEqual(iq._dep_tokens("Wiki-Ingest auth-flow"), ["Wiki-Ingest", "auth-flow"])
 
 
+class StatusMap(unittest.TestCase):
+    def test_maps_id_to_status(self):
+        items = [{"id": "a", "status": "done"}, {"id": "b", "status": "pending"}]
+        self.assertEqual(iq._status_map(items), {"a": "done", "b": "pending"})
+
+    def test_active_row_wins_over_finished_duplicate(self):
+        # a re-queued id (done row + new pending row) must NOT count as satisfied
+        items = [{"id": "a", "status": "done"}, {"id": "a", "status": "pending"}]
+        self.assertEqual(iq._status_map(items)["a"], "pending")
+
+
 if __name__ == "__main__":
     unittest.main()
