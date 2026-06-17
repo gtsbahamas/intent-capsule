@@ -290,6 +290,45 @@ class GrammarFields(unittest.TestCase):
         self.assertEqual(errs, [])  # neither is required
 
 
+class PickupRollup(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        self.tmp.close()
+        self._orig = iq.QUEUE
+        iq.QUEUE = self.tmp.name
+
+    def tearDown(self):
+        iq.QUEUE = self._orig
+        os.unlink(self.tmp.name)
+
+    def _pickup(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_pickup(show_all=True)
+        return buf.getvalue()
+
+    def test_rollup_line_printed_with_counts(self):
+        iq.save([
+            _cap("s1", group="shipsafe", status="done"),
+            _cap("s2", group="shipsafe"),                  # ready
+            _cap("s3", group="shipsafe", needs="s2"),      # blocked
+        ])
+        out = self._pickup()
+        self.assertIn("Groups:", out)
+        self.assertIn("shipsafe — 1/3 done (1 ready, 1 blocked)", out)
+
+    def test_no_rollup_section_when_no_groups(self):
+        iq.save([_cap("a"), _cap("b", needs="a")])
+        out = self._pickup()
+        self.assertNotIn("Groups:", out)
+
+    def test_ungrouped_capsule_absent_from_rollup_but_listed(self):
+        iq.save([_cap("g1", group="shipsafe"), _cap("plain")])
+        out = self._pickup()
+        self.assertIn("shipsafe — 0/1 done (1 ready)", out)
+        self.assertIn("**plain**", out)   # ungrouped still shown in Ready now
+
+
 class GroupRollup(unittest.TestCase):
     def test_counts_by_group_across_statuses(self):
         items = [

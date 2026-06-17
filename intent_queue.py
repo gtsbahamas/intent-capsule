@@ -600,8 +600,16 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     scope_label = f"for {proj}" if proj else "(all projects)"
     print(f"## Intent Queue {scope_label} — {len(mine)} pending"
           + (f", {len(orph_mine)} orphaned" if orph_mine else "") + " capsule(s)\n")
+    smap = _status_map(items)
+    scoped = [it for it in items if it.get("source") == proj] if proj else items
+    rollup = _group_rollup(scoped, smap)
+    if rollup:
+        print("Groups:")
+        for g, done, total, ready, blocked, dropped in rollup:
+            extra = [f"{n} {lbl}" for n, lbl in ((ready, "ready"), (blocked, "blocked"), (dropped, "dropped")) if n]
+            print(f"- {g} — {done}/{total} done" + (f" ({', '.join(extra)})" if extra else ""))
+        print()
     if mine:
-        smap = _status_map(items)
         ready, blocked, notes = [], [], []
         for it in sorted(mine, key=lambda x: x["created"]):
             c = _classify(it, smap)
