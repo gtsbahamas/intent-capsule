@@ -91,6 +91,10 @@ class FindCycles(unittest.TestCase):
         items = [_cap("a", on="a")]
         self.assertTrue(_has_cycle(iq._find_cycles(items), ["a"]))
 
+    def test_three_node_cycle_detected(self):
+        items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c", on="a")]
+        self.assertTrue(_has_cycle(iq._find_cycles(items), ["a", "b", "c"]))
+
     def test_acyclic_chain_has_no_cycle(self):
         items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c")]
         self.assertEqual(iq._find_cycles(items), [])

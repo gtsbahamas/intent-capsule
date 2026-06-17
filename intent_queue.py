@@ -68,7 +68,10 @@ def _status_map(items):
     dependency is not treated as satisfied by a stale `done` row."""
     m = {}
     for it in items:
-        id_, st = it["id"], it["status"]
+        id_, st = it.get("id"), it.get("status")
+        if id_ is None or st is None:
+            continue
+        # Two active rows for one id: first-encountered wins (FIFO matches cmd_add insertion order).
         if id_ not in m or (m[id_] in ("done", "dropped") and st in ("pending", "in_progress")):
             m[id_] = st
     return m
@@ -99,7 +102,9 @@ def _find_cycles(items):
     """Cycles in the `on:` graph restricted to UNFINISHED capsules
     (pending/in_progress). Only unfinished deps can deadlock — a `done` dep is a
     satisfied edge, not a wait. Returns a list of cycles, each a list of ids; a
-    capsule depending on itself is a length-1 cycle. Each distinct cycle once."""
+    capsule depending on itself is a length-1 cycle. Each distinct cycle once.
+    Assumes the dependency graph is well under Python's recursion limit (~1000); a
+    pathological linear chain that long would need an iterative DFS."""
     active = {it["id"] for it in items if it["status"] in ("pending", "in_progress")}
     adj = {}
     for it in items:
