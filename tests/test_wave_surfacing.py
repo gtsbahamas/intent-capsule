@@ -157,5 +157,43 @@ class NextGating(unittest.TestCase):
         self.assertNotIn("# intent capsule", out)
 
 
+class PickupSplit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        self.tmp.close()
+        self._orig = iq.QUEUE
+        iq.QUEUE = self.tmp.name
+
+    def tearDown(self):
+        iq.QUEUE = self._orig
+        os.unlink(self.tmp.name)
+
+    def _pickup(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_pickup(show_all=True)
+        return buf.getvalue()
+
+    def test_ready_and_blocked_are_partitioned(self):
+        iq.save([_cap("a", on="b"), _cap("b")])
+        out = self._pickup()
+        self.assertIn("Ready now", out)
+        self.assertIn("Blocked", out)
+        # b is ready, a is blocked waiting on b  ((?s) so . spans newlines)
+        self.assertRegex(out, r"(?s)Ready now.*\*\*b\*\*")
+        self.assertRegex(out, r"(?s)Blocked.*\*\*a\*\*")
+        self.assertIn("waiting on b", out)
+
+    def test_unknown_dep_note_emitted(self):
+        iq.save([_cap("a", on="ghost")])
+        out = self._pickup()
+        self.assertIn("unknown id 'ghost'", out)
+
+    def test_cycle_reported(self):
+        iq.save([_cap("a", on="b"), _cap("b", on="a")])
+        out = self._pickup()
+        self.assertIn("dependency cycle", out)
+
+
 if __name__ == "__main__":
     unittest.main()

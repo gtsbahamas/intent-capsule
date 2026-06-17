@@ -572,10 +572,34 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     print(f"## Intent Queue {scope_label} — {len(mine)} pending"
           + (f", {len(orph_mine)} orphaned" if orph_mine else "") + " capsule(s)\n")
     if mine:
+        smap = _status_map(items)
+        ready, blocked, notes = [], [], []
         for it in sorted(mine, key=lambda x: x["created"]):
-            print(f"- **{it['id']}** — {it['parsed'].get('do','')[:70]}  "
-                  f"(accept: {len(it['parsed'].get('=',[]))} criteria)")
-        print(f"\nRun `intent-queue next` to drain the oldest.")
+            c = _classify(it, smap)
+            (ready if c["ready"] else blocked).append((it, c))
+            notes += [(it["id"], u) for u in c["unknown"]]
+        if ready:
+            print("Ready now:")
+            for it, _c in ready:
+                print(f"- **{it['id']}** — {it['parsed'].get('do','')[:70]}  "
+                      f"(accept: {len(it['parsed'].get('=',[]))} criteria)")
+        if blocked:
+            print(("\n" if ready else "") + "Blocked:")
+            for it, c in blocked:
+                bits = []
+                if c["waiting"]:
+                    bits.append("waiting on " + ", ".join(c["waiting"]))
+                if c["dead"]:
+                    bits.append("dead deps (dropped): " + ", ".join(c["dead"]))
+                print(f"- **{it['id']}** — {it['parsed'].get('do','')[:60]}  ({'; '.join(bits)})")
+        for cid, u in notes:
+            print(f"  note: {cid}: on: references unknown id {u!r} (non-gating)")
+        mine_ids = {it["id"] for it in mine}
+        for cyc in _find_cycles(items):
+            if any(n in mine_ids for n in cyc):
+                print(f"  ⚠ dependency cycle (deadlock): " + " -> ".join(cyc) + f" -> {cyc[0]}")
+        if ready:
+            print(f"\nRun `intent-queue next` to drain the oldest ready capsule.")
     elif proj:
         print(f"(none pending for {proj})")
     if orph_mine:
