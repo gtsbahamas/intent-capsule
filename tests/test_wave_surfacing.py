@@ -11,7 +11,7 @@ dropped deps and dependency cycles are surfaced, never silently hidden; and
 Run:  python3 -m unittest discover -s tests
   or: python3 tests/test_wave_surfacing.py
 """
-import os, sys, io, json, tempfile, unittest
+import os, sys, io, tempfile, unittest
 from contextlib import redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -200,6 +200,28 @@ class PickupSplit(unittest.TestCase):
         self.assertNotIn("Ready now", out)
         self.assertIn("Blocked", out)
         self.assertNotIn("Run `intent-queue next`", out)
+
+
+class BackwardCompat(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        self.tmp.close()
+        self._orig = iq.QUEUE
+        iq.QUEUE = self.tmp.name
+
+    def tearDown(self):
+        iq.QUEUE = self._orig
+        os.unlink(self.tmp.name)
+
+    def test_free_text_on_with_no_matching_ids_is_served_unchanged(self):
+        # a pre-existing capsule whose on: names features, not queued ids
+        a = _cap("only", on="the auth module and the csv exporter")
+        iq.save([a])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_next(show_all=True)
+        self.assertIn("intent capsule 'only'", buf.getvalue())
+        self.assertEqual(iq._select(iq.load(), "only")["status"], "in_progress")
 
 
 if __name__ == "__main__":
