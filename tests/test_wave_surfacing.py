@@ -31,11 +31,12 @@ class DepTokens(unittest.TestCase):
         self.assertEqual(iq._dep_tokens("Wiki-Ingest auth-flow"), ["Wiki-Ingest", "auth-flow"])
 
 
-def _cap(id_, on="", do="x", accept=("done",), status="pending"):
+def _cap(id_, on="", needs="", group="", do="x", accept=("done",), status="pending"):
     """Build a queue item shaped like cmd_add produces."""
     return {"id": id_, "status": status, "created": "2026-06-17T00:00:00+00:00",
             "source": "test", "capsule": "", "started": None, "done": None, "proof": None,
-            "parsed": {"id": id_, "do": do, "on": on, "=": list(accept)}}
+            "parsed": {"id": id_, "do": do, "on": on, "needs": needs, "group": group,
+                       "=": list(accept)}}
 
 
 class StatusMap(unittest.TestCase):
@@ -60,23 +61,23 @@ class Classify(unittest.TestCase):
         self.assertTrue(iq._classify(_cap("a"), smap)["ready"])
 
     def test_unfinished_dep_blocks(self):
-        items = [_cap("a", on="b"), _cap("b")]
+        items = [_cap("a", needs="b"), _cap("b")]
         c = iq._classify(items[0], iq._status_map(items))
         self.assertFalse(c["ready"])
         self.assertEqual(c["waiting"], ["b"])
 
     def test_done_dep_is_satisfied(self):
-        items = [_cap("a", on="b"), _cap("b", status="done")]
+        items = [_cap("a", needs="b"), _cap("b", status="done")]
         self.assertTrue(iq._classify(items[0], iq._status_map(items))["ready"])
 
     def test_dropped_dep_is_dead(self):
-        items = [_cap("a", on="b"), _cap("b", status="dropped")]
+        items = [_cap("a", needs="b"), _cap("b", status="dropped")]
         c = iq._classify(items[0], iq._status_map(items))
         self.assertFalse(c["ready"])
         self.assertEqual(c["dead"], ["b"])
 
     def test_unknown_token_is_non_gating(self):
-        items = [_cap("a", on="ghost")]
+        items = [_cap("a", needs="ghost")]
         c = iq._classify(items[0], iq._status_map(items))
         self.assertTrue(c["ready"])
         self.assertEqual(c["unknown"], ["ghost"])
@@ -84,28 +85,28 @@ class Classify(unittest.TestCase):
 
 class FindCycles(unittest.TestCase):
     def test_two_node_cycle_detected(self):
-        items = [_cap("a", on="b"), _cap("b", on="a")]
+        items = [_cap("a", needs="b"), _cap("b", needs="a")]
         self.assertTrue(_has_cycle(iq._find_cycles(items), ["a", "b"]))
 
     def test_self_loop_detected(self):
-        items = [_cap("a", on="a")]
+        items = [_cap("a", needs="a")]
         self.assertTrue(_has_cycle(iq._find_cycles(items), ["a"]))
 
     def test_three_node_cycle_detected(self):
-        items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c", on="a")]
+        items = [_cap("a", needs="b"), _cap("b", needs="c"), _cap("c", needs="a")]
         self.assertTrue(_has_cycle(iq._find_cycles(items), ["a", "b", "c"]))
 
     def test_acyclic_chain_has_no_cycle(self):
-        items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c")]
+        items = [_cap("a", needs="b"), _cap("b", needs="c"), _cap("c")]
         self.assertEqual(iq._find_cycles(items), [])
 
     def test_finished_nodes_excluded_from_graph(self):
         # b is done -> edge a->b cannot deadlock, even if b nominally points back
-        items = [_cap("a", on="b"), _cap("b", on="a", status="done")]
+        items = [_cap("a", needs="b"), _cap("b", needs="a", status="done")]
         self.assertEqual(iq._find_cycles(items), [])
 
     def test_three_node_cycle_broken_by_done_node(self):
-        items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c", on="a", status="done")]
+        items = [_cap("a", needs="b"), _cap("b", needs="c"), _cap("c", needs="a", status="done")]
         self.assertEqual(iq._find_cycles(items), [])
 
 
@@ -131,20 +132,20 @@ class NextGating(unittest.TestCase):
 
     def test_serves_dep_before_dependent(self):
         # a depends on b; both pending -> next must serve b, not a
-        a = _cap("a", on="b"); a["created"] = "2026-06-17T00:00:00+00:00"
-        b = _cap("b");         b["created"] = "2026-06-17T01:00:00+00:00"  # b newer
+        a = _cap("a", needs="b"); a["created"] = "2026-06-17T00:00:00+00:00"
+        b = _cap("b");            b["created"] = "2026-06-17T01:00:00+00:00"  # b newer
         self._seed([a, b])
         out = self._next()
         self.assertIn("intent capsule 'b'", out)
         self.assertNotIn("intent capsule 'a'", out)
 
     def test_dependent_served_after_dep_done(self):
-        a = _cap("a", on="b"); b = _cap("b", status="done")
+        a = _cap("a", needs="b"); b = _cap("b", status="done")
         self._seed([a, b])
         self.assertIn("intent capsule 'a'", self._next())
 
     def test_all_blocked_reports_and_serves_nothing(self):
-        a = _cap("a", on="b"); b = _cap("b", status="in_progress")
+        a = _cap("a", needs="b"); b = _cap("b", status="in_progress")
         self._seed([a, b])
         out = self._next()
         self.assertIn("all blocked", out)
@@ -154,15 +155,15 @@ class NextGating(unittest.TestCase):
         self.assertEqual(iq._select(iq.load(), "a")["status"], "pending")
 
     def test_blocked_cycle_reported(self):
-        a = _cap("a", on="b"); b = _cap("b", on="a")
+        a = _cap("a", needs="b"); b = _cap("b", needs="a")
         self._seed([a, b])
         out = self._next()
         self.assertIn("dependency cycle", out)
         self.assertNotIn("# intent capsule", out)
 
     def test_dep_gating_is_cross_project(self):
-        a = _cap("a", on="b"); a["source"] = "projX"
-        b = _cap("b");         b["source"] = "projY"
+        a = _cap("a", needs="b"); a["source"] = "projX"
+        b = _cap("b");            b["source"] = "projY"
         self._seed([a, b])
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -191,7 +192,7 @@ class PickupSplit(unittest.TestCase):
         return buf.getvalue()
 
     def test_ready_and_blocked_are_partitioned(self):
-        iq.save([_cap("a", on="b"), _cap("b")])
+        iq.save([_cap("a", needs="b"), _cap("b")])
         out = self._pickup()
         self.assertIn("Ready now", out)
         self.assertIn("Blocked", out)
@@ -202,7 +203,7 @@ class PickupSplit(unittest.TestCase):
 
     def test_typo_dep_surfaced_only_alongside_a_real_dep(self):
         # b is a real queued id; ghost is a typo -> ghost surfaces as a note
-        iq.save([_cap("a", on="b ghost"), _cap("b")])
+        iq.save([_cap("a", needs="b ghost"), _cap("b")])
         self.assertIn("unknown id 'ghost'", self._pickup())
 
     def test_pure_free_text_on_emits_no_notes(self):
@@ -211,12 +212,12 @@ class PickupSplit(unittest.TestCase):
         self.assertNotIn("unknown id", self._pickup())
 
     def test_cycle_reported(self):
-        iq.save([_cap("a", on="b"), _cap("b", on="a")])
+        iq.save([_cap("a", needs="b"), _cap("b", needs="a")])
         out = self._pickup()
         self.assertIn("dependency cycle", out)
 
     def test_all_blocked_shows_blocked_section_without_cta(self):
-        iq.save([_cap("a", on="b"), _cap("b", on="a")])  # mutual block, no ready
+        iq.save([_cap("a", needs="b"), _cap("b", needs="a")])  # mutual block, no ready
         out = self._pickup()
         self.assertNotIn("Ready now", out)
         self.assertIn("Blocked", out)
@@ -243,6 +244,36 @@ class BackwardCompat(unittest.TestCase):
             iq.cmd_next(show_all=True)
         self.assertIn("intent capsule 'only'", buf.getvalue())
         self.assertEqual(iq._select(iq.load(), "only")["status"], "in_progress")
+
+
+class GatingMigration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        self.tmp.close()
+        self._orig = iq.QUEUE
+        iq.QUEUE = self.tmp.name
+
+    def tearDown(self):
+        iq.QUEUE = self._orig
+        os.unlink(self.tmp.name)
+
+    def test_on_no_longer_gates(self):
+        # a:on=b (provenance), b pending. Post-migration on: does NOT gate -> a is served.
+        a = _cap("a", on="b"); a["created"] = "2026-06-17T00:00:00+00:00"
+        b = _cap("b");         b["created"] = "2026-06-17T01:00:00+00:00"
+        iq.save([a, b])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_next(show_all=True)
+        self.assertIn("intent capsule 'a'", buf.getvalue())
+
+    def test_needs_gates(self):
+        a = _cap("a", needs="b"); b = _cap("b")
+        iq.save([a, b])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            iq.cmd_next(show_all=True)
+        self.assertIn("intent capsule 'b'", buf.getvalue())  # b served, a blocked on needs
 
 
 class GrammarFields(unittest.TestCase):

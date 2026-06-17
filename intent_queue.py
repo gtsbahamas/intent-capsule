@@ -85,7 +85,7 @@ def _classify(item, status_map):
       unknown - tokens matching no queued id (non-gating; informational)
     ready == no waiting and no dead."""
     waiting, dead, unknown = [], [], []
-    for tok in _dep_tokens(item.get("parsed", {}).get("on", "")):
+    for tok in _dep_tokens(item.get("parsed", {}).get("needs", "")):
         st = status_map.get(tok)
         if st is None:
             unknown.append(tok)
@@ -99,7 +99,7 @@ def _classify(item, status_map):
             "waiting": waiting, "dead": dead, "unknown": unknown}
 
 def _find_cycles(items):
-    """Cycles in the `on:` graph restricted to UNFINISHED capsules
+    """Cycles in the `needs:` graph restricted to UNFINISHED capsules
     (pending/in_progress). Only unfinished deps can deadlock — a `done` dep is a
     satisfied edge, not a wait. Returns a list of cycles, each a list of ids; a
     capsule depending on itself is a length-1 cycle. Each distinct cycle once.
@@ -110,7 +110,7 @@ def _find_cycles(items):
     for it in items:
         if it["status"] not in ("pending", "in_progress"):
             continue
-        adj[it["id"]] = [t for t in _dep_tokens(it.get("parsed", {}).get("on", "")) if t in active]
+        adj[it["id"]] = [t for t in _dep_tokens(it.get("parsed", {}).get("needs", "")) if t in active]
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {n: WHITE for n in adj}
     stack, cycles, seen = [], [], set()
@@ -585,7 +585,7 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
             # surface unknown-dep notes only when the capsule names at least one REAL
             # queued id (it intends id-gating). Pure free-text on: prose stays silent
             # instead of emitting one noise note per word.
-            if c["unknown"] and any(t in smap for t in _dep_tokens(it.get("parsed", {}).get("on", ""))):
+            if c["unknown"] and any(t in smap for t in _dep_tokens(it.get("parsed", {}).get("needs", ""))):
                 notes += [(it["id"], u) for u in c["unknown"]]
         if ready:
             print("Ready now:")
@@ -604,7 +604,7 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
                     bits.append("dead deps (dropped): " + ", ".join(c["dead"]))
                 print(f"- **{it['id']}** — {it['parsed'].get('do','')[:70]}  ({'; '.join(bits)})")
         for cid, u in notes:
-            print(f"  note: {cid}: on: references unknown id {u!r} (non-gating)")
+            print(f"  note: {cid}: needs: references unknown id {u!r} (non-gating)")
         _print_scope_cycles(items, {it["id"] for it in mine})
         if ready:
             print(f"\nRun `intent-queue next` to drain the oldest ready capsule.")
