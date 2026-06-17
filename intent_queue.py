@@ -17,9 +17,9 @@ Grammar:
 
 Usage:
   intent-queue add [--source S] [--file F]      # F, else stdin, else clipboard (pbpaste)
-  intent-queue validate [--file F]              # dry-run completeness check
+  intent-queue validate [--file F] [--strict [--plan P]]   # completeness; --strict adds the deterministic plan-ops gate
   intent-queue list [--status pending|active|all]
-  intent-queue next                             # oldest pending -> in_progress, prints capsule
+  intent-queue next [--strict [--plan P]]       # oldest pending -> in_progress, prints capsule; --strict refuses a malformed one
   intent-queue done <id> --proof "..." [--proof "..."]   # one --proof per acceptance criterion, in order
   intent-queue drop <id> --yes
   intent-queue reap [--older-than MIN] [--yes]  # resurface orphaned in_progress -> pending
@@ -27,6 +27,7 @@ Usage:
 Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
 """
 import os, sys, re, json, argparse, subprocess
+from collections import namedtuple
 from datetime import datetime, timezone
 
 QUEUE = os.environ.get("INTENT_QUEUE", os.path.expanduser("~/.claude/intent-queue.jsonl"))
@@ -94,6 +95,116 @@ def check(parsed):
         warns.append(f"field {tag!r} set more than once — only the last value is kept")
     return errs, warns
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Deterministic strict validator — the code-level safety layer the model isn't.
+#
+# RESULTS.md's load-bearing caveat: the MODEL executes ~31% of malformed plan-ops
+# lines instead of refusing them (adversarial loud-fail stuck at ~69%). So any
+# pipeline that APPLIES capsules unattended needs a deterministic gate FIRST. This
+# is it: stdlib-only, no LLM, no network, identical behaviour offline.
+#
+# It validates the PLAN-OPS grammar (`OP id [deps] [@owner] [#status] [:note]`,
+# legend in harness.py), NOT the v-intent capsule grammar. v-intent lines (do:/in:/
+# !:/=:/@id …) are skipped, so a normal rich-intent capsule yields zero plan-ops
+# lines and always passes — the bang/tilde/question collisions (`!:` vs `!id`,
+# `~:` vs `~id`, `?:` vs `?id`) are disambiguated by the colon the tag carries.
+#
+# The four failure modes are exactly the adversarial-bucket cases (harness.py):
+# self-dep, unknown-id, op-char-id, dup-id.
+OP_CHARS    = set("+~vx>!?")                                  # single-char op tokens
+PREFIX_OPS  = {"+":"new","~":"edit",">":"prefer","!":"must","?":"query"}  # OP attaches to id
+BARE_OPS    = {"v":"done","x":"drop","rm":"drop"}            # OP is its own token (rm = v3 drop)
+Rejection   = namedtuple("Rejection", ["reason", "line"])
+
+def _strip_planops_note(s):
+    """Drop a trailing note (`:"..."` quoted, or ` :bare`) so it can't skew tokenizing."""
+    q = s.find(':"')
+    if q != -1:
+        return s[:q].rstrip()
+    b = s.find(" :")                                          # bare note marker is space-colon
+    if b != -1:
+        return s[:b].rstrip()
+    return s
+
+def parse_planops_line(line):
+    """A plan-ops op line -> {op,id,deps,first} or None if the line isn't a guarded op.
+
+    Returns None for v-intent tag lines, @id headers, prose continuations, and bare
+    existing-id references — anything that isn't an OP we guard."""
+    s = line.strip()
+    if not s:
+        return None
+    toks = _strip_planops_note(s).split()
+    if not toks:
+        return None
+    first = toks[0]
+    if first in BARE_OPS:                                     # `v id`, `x id`, `rm id`
+        op, id_, rest = BARE_OPS[first], (toks[1] if len(toks) > 1 else ""), toks[2:]
+    elif first[0] in PREFIX_OPS:                              # `+id`, `~id`, `?id`, `!id`, `>id`
+        op, id_, rest = PREFIX_OPS[first[0]], first[1:], toks[1:]
+    else:
+        return None                                          # unrecognized first token — not ours
+    deps = []
+    for t in rest:                                           # `<a,b` blockedBy / `>a,b` blocks
+        if t[:1] in ("<", ">"):
+            deps += [d for d in t[1:].split(",") if d]
+    return {"op": op, "id": id_, "deps": deps, "first": first}
+
+def strict_validate(text, plan_ids=None):
+    """Return a list of Rejection(reason, line) for plan-ops violations. Empty == clean.
+
+    plan_ids: existing node ids. When supplied, edit/done/drop/query/prefer/must on an
+    id that is neither in the plan nor created by a `+new` in this same capsule is an
+    unknown-id rejection. `+new` ids are always exempt. Without a plan, the unknown-id
+    check is skipped (you can't know what's unknown)."""
+    plan = set(plan_ids) if plan_ids is not None else None
+    ops = []                                                 # (parsed, original_line)
+    new_ids = set()                                          # +new ids known within this capsule
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("@") and not TAG_RE.match(s[1:].strip()):
+            continue                                         # @id header (v-intent)
+        if TAG_RE.match(s):
+            continue                                         # v-intent tag line (do:/!:/=: …)
+        p = parse_planops_line(s)
+        if p is None:
+            continue
+        ops.append((p, raw.rstrip()))
+        if p["op"] == "new" and p["id"]:
+            new_ids.add(p["id"])
+    rej, target_counts = [], {}
+    for p, line in ops:
+        oid = p["id"]
+        if not oid:
+            rej.append(Rejection(f"op {p['first']!r} has no target id", line)); continue
+        if p["op"] == "new" and (oid[0] in OP_CHARS or oid.startswith("rm")):
+            rej.append(Rejection(
+                f"new id {oid!r} starts with an op char {oid[0]!r} — ambiguous with the op grammar", line))
+        if oid in p["deps"]:
+            rej.append(Rejection(f"node {oid!r} depends on / blocks itself (self-dep)", line))
+        if plan is not None and p["op"] != "new" and oid not in plan and oid not in new_ids:
+            rej.append(Rejection(f"{p['op']} targets unknown id {oid!r} (not in the supplied plan)", line))
+        target_counts[oid] = target_counts.get(oid, 0) + 1
+    for oid, c in target_counts.items():
+        if c > 1:
+            rej.append(Rejection(f"id {oid!r} is a target {c}× in one capsule (duplicate id)", None))
+    return rej
+
+def load_plan(path):
+    """Read a plan.json ({'nodes':[{'id':…}, …]}) -> list of ids, or None if no path."""
+    if not path:
+        return None
+    with open(path) as f:
+        d = json.load(f)
+    return [n["id"] for n in d.get("nodes", []) if isinstance(n, dict) and "id" in n]
+
+def _print_rejections(rej):
+    print(f"\n  STRICT — {len(rej)} deterministic rejection(s):")
+    for r in rej:
+        print(f"  ✗ {r.reason}" + (f"\n      >> {r.line.strip()}" if r.line else ""))
+
 def read_input(file):
     if file:
         return open(file).read()
@@ -116,7 +227,7 @@ def save(items):
         for it in items:
             f.write(json.dumps(it) + "\n")
 
-def cmd_validate(text):
+def cmd_validate(text, strict=False, plan_ids=None):
     parsed = parse_capsule(text)
     errs, warns = check(parsed)
     print(f"id: {parsed.get('id','(none)')}   do: {parsed.get('do','(none)')[:60]}")
@@ -125,16 +236,30 @@ def cmd_validate(text):
           f"constraints:{len(parsed.get('!',[]))} accept:{len(parsed.get('=',[]))}")
     for w in warns: print(f"  warn:  {w}")
     for e in errs:  print(f"  ERROR: {e}")
-    return parsed, errs, warns
+    rc = 1 if errs else 0
+    if strict:
+        rej = strict_validate(text, plan_ids)
+        if rej:
+            _print_rejections(rej); rc = 1
+        else:
+            print("  strict: no deterministic plan-ops violations.")
+    return parsed, errs, warns, rc
 
 def _store_parsed(parsed):
     """Strip transient keys before persisting the parsed capsule."""
     return {k: v for k, v in parsed.items() if not k.startswith("_")}
 
 def cmd_add(text, source):
-    parsed, errs, _ = cmd_validate(text)
+    parsed, errs, _, _ = cmd_validate(text)
     if errs:
         print("\nREJECTED — fix the capsule while context is fresh (this is the point).")
+        return 1
+    # reuse the deterministic gate (structural checks; no plan => unknown-id skipped) so a
+    # malformed plan-ops batch can't be queued for an unattended executor to choke on later.
+    rej = strict_validate(text)
+    if rej:
+        _print_rejections(rej)
+        print("\nREJECTED — deterministic plan-ops violation (self-dep / op-char-id / dup-id).")
         return 1
     items = load()
     if any(it["id"] == parsed["id"] and it["status"] in ("pending","in_progress") for it in items):
@@ -190,13 +315,27 @@ def _emit_capsule(nxt):
     print(f"# execute this cold, then: intent-queue done {nxt['id']} {hint}\n")
     print(nxt["capsule"])
 
-def cmd_next(show_all=False, project=None):
+def _strict_gate(nxt, strict, plan_ids):
+    """For unattended pipelines: refuse to hand out a capsule that fails the deterministic
+    validator, WITHOUT flipping its status (so it isn't burned). Returns True if blocked."""
+    if not strict:
+        return False
+    rej = strict_validate(nxt["capsule"], plan_ids)
+    if rej:
+        print(f"# ✗ STRICT-BLOCKED capsule {nxt['id']!r} — not handed out, left pending:")
+        _print_rejections(rej)
+        return True
+    return False
+
+def cmd_next(show_all=False, project=None, strict=False, plan_ids=None):
     items = load()
     pend = [it for it in items if it["status"] == "pending"]
     proj, mine, others = _scope(pend, show_all, project)
     # 1) Serve pending work in scope first — never preempt a live queue.
     if mine:
         nxt = sorted(mine, key=lambda x: x["created"])[0]
+        if _strict_gate(nxt, strict, plan_ids):
+            return 1                                         # blocked; status untouched (not saved)
         nxt["status"] = "in_progress"; nxt["started"] = now()
         save(items)
         _emit_capsule(nxt)
@@ -212,6 +351,8 @@ def cmd_next(show_all=False, project=None):
     eligible = [it for it in orph_mine if _age_min(it.get("started")) >= ORPHAN_MIN]
     if eligible:
         nxt = sorted(eligible, key=lambda x: x.get("started") or "")[0]
+        if _strict_gate(nxt, strict, plan_ids):
+            return 1                                         # blocked; orphan left as-is
         idle = _age_min(nxt.get("started"))
         idle_s = "unknown" if idle == float("inf") else f"{int(idle)}m"
         nxt["started"] = now()   # re-stamp: this session owns the clock now
@@ -308,7 +449,7 @@ def cmd_reap(older_than, yes):
     print(f"\nResurfaced {len(stale)} -> pending.")
     return 0
 
-def cmd_pickup(show_all=False, project=None):
+def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     items = load()
     pend = [it for it in items if it["status"] == "pending"]
     orphans = [it for it in items if it["status"] == "in_progress"
@@ -339,6 +480,16 @@ def cmd_pickup(show_all=False, project=None):
         ids = ", ".join(o["id"] for o in others)
         print(f"\n→ {len(others)} capsule(s) queued FOR OTHER PROJECTS: {ids}\n"
               f"  These will not prompt you here. Run `intent-queue pickup --all` to act on them.")
+    if strict:
+        bad = [(it, strict_validate(it["capsule"], plan_ids)) for it in mine]
+        bad = [(it, r) for it, r in bad if r]
+        if bad:
+            print(f"\n⚠ STRICT — {len(bad)} pending capsule(s) fail the deterministic validator "
+                  f"(a `next --strict` pipeline would refuse them):")
+            for it, r in bad:
+                print(f"  {it['id']}: " + "; ".join(x.reason for x in r))
+        else:
+            print("\n✓ strict: all pending capsules pass the deterministic validator.")
     return 0
 
 def main():
@@ -346,19 +497,25 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add");      a.add_argument("--source"); a.add_argument("--file")
     v = sub.add_parser("validate"); v.add_argument("--file")
+    v.add_argument("--strict", action="store_true"); v.add_argument("--plan")
     l = sub.add_parser("list");     l.add_argument("--status", default="active")
     n = sub.add_parser("next");   n.add_argument("--all", action="store_true"); n.add_argument("--project")
+    n.add_argument("--strict", action="store_true"); n.add_argument("--plan")
     p = sub.add_parser("pickup"); p.add_argument("--all", action="store_true"); p.add_argument("--project")
+    p.add_argument("--strict", action="store_true"); p.add_argument("--plan")
     d = sub.add_parser("done");  d.add_argument("id"); d.add_argument("--proof", action="append")
     x = sub.add_parser("drop");  x.add_argument("id"); x.add_argument("--yes", action="store_true")
     r = sub.add_parser("reap"); r.add_argument("--older-than", type=int, default=ORPHAN_MIN)
     r.add_argument("--yes", action="store_true")
     args = ap.parse_args()
     if args.cmd == "add":      return cmd_add(read_input(args.file), args.source)
-    if args.cmd == "validate": cmd_validate(read_input(args.file)); return 0
+    if args.cmd == "validate":
+        if args.strict:
+            return cmd_validate(read_input(args.file), True, load_plan(args.plan))[3]
+        cmd_validate(read_input(args.file)); return 0
     if args.cmd == "list":     return cmd_list(args.status)
-    if args.cmd == "next":     return cmd_next(args.all, args.project)
-    if args.cmd == "pickup":   return cmd_pickup(args.all, args.project)
+    if args.cmd == "next":     return cmd_next(args.all, args.project, args.strict, load_plan(args.plan))
+    if args.cmd == "pickup":   return cmd_pickup(args.all, args.project, args.strict, load_plan(args.plan))
     if args.cmd == "done":     return cmd_done(args.id, args.proof)
     if args.cmd == "reap":     return cmd_reap(args.older_than, args.yes)
     if args.cmd == "drop":

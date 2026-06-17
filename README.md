@@ -45,7 +45,7 @@ For rich intent the convention costs *more* tokens — and that's the point. Ter
 
 ## The honest caveat (don't skip)
 
-**The model is not the safety layer.** ~31% of malformed/garbage capsule lines get executed rather than rejected, so any pipeline that runs capsules automatically needs a **deterministic code-level validator** (reject self-deps, unknown ids, etc.) *before* applying. The `done` gate is an *attestation* (the executor states how each `=` was met), not a verifier — it forces engagement, it doesn't guarantee truth. Numbers are Opus-class, one seed, n=12–120: directional, not a chasm.
+**The model is not the safety layer.** ~31% of malformed/garbage capsule lines get executed rather than rejected, so any pipeline that runs capsules automatically needs a **deterministic code-level validator** *before* applying. That validator now exists: `strict_validate()` in [`intent_queue.py`](intent_queue.py) (stdlib-only, no LLM, no network) deterministically rejects the four adversarial-bucket modes — self-dep, unknown-id (against a supplied plan), op-char-id, and duplicate-id. Wired in three places: `validate --strict --plan plan.json` (nonzero exit on violation), a `--strict` gate on `next`/`pickup` (an unattended pipeline refuses a bad capsule without burning it), and reused by `add`. Covered by [`tests/`](tests/). It is a *targeted* gate for those four modes, not a full grammar linter (invalid status/owner vocab and unknown ops are out of scope, by design). The `done` gate is still an *attestation* (the executor states how each `=` was met), not a verifier — it forces engagement, it doesn't guarantee truth. Numbers are Opus-class, one seed, n=12–120: directional, not a chasm.
 
 ---
 
@@ -142,7 +142,8 @@ python3 intent_capsule.py
 ## Repo layout
 
 ```
-intent_queue.py      # the CLI (stdlib only) — capture / validate / queue / pickup / next / done / reap
+intent_queue.py      # the CLI (stdlib only) — capture / validate / queue / pickup / next / done / reap + strict_validate()
+tests/               # stdlib unittest suite for the deterministic strict validator
 CONCEPT.md           # the concept: explain-like-I'm-10, the mechanism, where it generalizes
 RESULTS.md           # the experiment: cost math, fidelity stats, caveats, methodology lessons
 harness.py           # plan-ops fidelity harness (grammar v1/v2/v3, McNemar, Wilson CIs)

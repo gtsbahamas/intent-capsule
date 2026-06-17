@@ -75,7 +75,7 @@ The "new language" stayed dead. The **cached in-distribution convention** is rea
 
 ## Honest caveats (do not skip)
 
-- **Adversarial safety did not improve** — loud-fail 94% (v1) → 75% (v2) → 69% (v3). Relaxing the id guard to stop killing legit `+new` also made the model more permissive on malformed input. ~31% of garbage lines get executed instead of rejected. **Production needs a deterministic validation layer in code** (reject self-deps, unknown-id edits) *before* applying any mutation — do not trust the model for this.
+- **Adversarial safety did not improve** — loud-fail 94% (v1) → 75% (v2) → 69% (v3). Relaxing the id guard to stop killing legit `+new` also made the model more permissive on malformed input. ~31% of garbage lines get executed instead of rejected. **Production needs a deterministic validation layer in code** *before* applying any mutation — do not trust the model for this. **This now exists** as `strict_validate()` in [`intent_queue.py`](intent_queue.py): a stdlib-only (no LLM, no network) gate that deterministically rejects the four adversarial-bucket modes — self-dep, unknown-id (vs a supplied plan), op-char-id, duplicate-id — wired into `validate --strict --plan`, a `--strict` gate on `next`/`pickup`, and `add`; tested in [`tests/`](tests/). It is targeted at those four modes, not a full grammar linter (invalid status/owner vocab and unknown ops stay out of scope), so it does not "fix" the 69% loud-fail number — it removes the model from the safety decision for the modes that matter.
 - **Scope:** parity established for Opus 4.8, plan-mutation intents, n=120, one seed. Other models/domains need a re-run (the harness does it with one flag).
 - **Token saving** for v2/v3 is slightly under the v1 64% figure (note quoting), not precisely re-measured.
 
@@ -92,8 +92,12 @@ The "new language" stayed dead. The **cached in-distribution convention** is rea
 harness.py            # the plan-ops fidelity harness (grammar v1/v2/v3, dataset save/load, stats)
 intent_capsule.py     # the implementation-intent fidelity harness (Part 3)
 example_plan.json     # synthetic plan the harness reads (override with PLAN_PATH=your_plan.json)
+tests/                # stdlib unittest suite for the deterministic strict validator
 report_*clean.txt     # per-grammar summary (generated)
 results_*clean.json   # full per-case results + all failures (generated)
+
+# run the deterministic-validator tests (no API key, no deps):
+python3 -m unittest discover -s tests
 
 # re-run the plan-ops grammar test:
 export ANTHROPIC_API_KEY="sk-ant-..."
