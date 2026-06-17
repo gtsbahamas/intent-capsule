@@ -31,11 +31,11 @@ from collections import namedtuple
 from datetime import datetime, timezone
 
 QUEUE = os.environ.get("INTENT_QUEUE", os.path.expanduser("~/.claude/intent-queue.jsonl"))
-SINGLE = {"do","in","on","why","?"}          # at most one
+SINGLE = {"do","in","on","needs","group","why","?"}   # at most one
 REPEAT = {"!","~","="}                          # zero or more -> list
 REQUIRED = ["id","do","="]                      # the anti-omission contract
 RECOMMENDED = ["in","why"]
-TAG_RE = re.compile(r"^(do|in|on|why|[!~?=]):\s*(.*)$")
+TAG_RE = re.compile(r"^(do|in|on|needs|group|why|[!~?=]):\s*(.*)$")
 ORPHAN_MIN = 120                                 # in_progress older than this (min) is reap-eligible
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")

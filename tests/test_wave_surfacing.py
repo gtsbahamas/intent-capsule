@@ -245,5 +245,18 @@ class BackwardCompat(unittest.TestCase):
         self.assertEqual(iq._select(iq.load(), "only")["status"], "in_progress")
 
 
+class GrammarFields(unittest.TestCase):
+    def test_needs_and_group_parse_as_single_fields(self):
+        cap = "@x\ndo: a thing\nneeds: dep-one dep-two\ngroup: shipsafe\n=: works"
+        p = iq.parse_capsule(cap)
+        self.assertEqual(p.get("needs"), "dep-one dep-two")
+        self.assertEqual(p.get("group"), "shipsafe")
+
+    def test_needs_and_group_are_optional(self):
+        p = iq.parse_capsule("@x\ndo: a thing\n=: works")
+        errs, _ = iq.check(p)
+        self.assertEqual(errs, [])  # neither is required
+
+
 if __name__ == "__main__":
     unittest.main()
