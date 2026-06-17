@@ -49,6 +49,11 @@ class StatusMap(unittest.TestCase):
         self.assertEqual(iq._status_map(items)["a"], "pending")
 
 
+def _has_cycle(cycles, ids):
+    want = tuple(sorted(ids))
+    return any(tuple(sorted(c)) == want for c in cycles)
+
+
 class Classify(unittest.TestCase):
     def test_no_deps_is_ready(self):
         smap = iq._status_map([_cap("a")])
@@ -75,6 +80,25 @@ class Classify(unittest.TestCase):
         c = iq._classify(items[0], iq._status_map(items))
         self.assertTrue(c["ready"])
         self.assertEqual(c["unknown"], ["ghost"])
+
+
+class FindCycles(unittest.TestCase):
+    def test_two_node_cycle_detected(self):
+        items = [_cap("a", on="b"), _cap("b", on="a")]
+        self.assertTrue(_has_cycle(iq._find_cycles(items), ["a", "b"]))
+
+    def test_self_loop_detected(self):
+        items = [_cap("a", on="a")]
+        self.assertTrue(_has_cycle(iq._find_cycles(items), ["a"]))
+
+    def test_acyclic_chain_has_no_cycle(self):
+        items = [_cap("a", on="b"), _cap("b", on="c"), _cap("c")]
+        self.assertEqual(iq._find_cycles(items), [])
+
+    def test_finished_nodes_excluded_from_graph(self):
+        # b is done -> edge a->b cannot deadlock, even if b nominally points back
+        items = [_cap("a", on="b"), _cap("b", on="a", status="done")]
+        self.assertEqual(iq._find_cycles(items), [])
 
 
 if __name__ == "__main__":

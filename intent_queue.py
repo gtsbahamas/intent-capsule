@@ -95,6 +95,44 @@ def _classify(item, status_map):
     return {"ready": not waiting and not dead,
             "waiting": waiting, "dead": dead, "unknown": unknown}
 
+def _find_cycles(items):
+    """Cycles in the `on:` graph restricted to UNFINISHED capsules
+    (pending/in_progress). Only unfinished deps can deadlock — a `done` dep is a
+    satisfied edge, not a wait. Returns a list of cycles, each a list of ids; a
+    capsule depending on itself is a length-1 cycle. Each distinct cycle once."""
+    active = {it["id"] for it in items if it["status"] in ("pending", "in_progress")}
+    adj = {}
+    for it in items:
+        if it["status"] not in ("pending", "in_progress"):
+            continue
+        adj[it["id"]] = [t for t in _dep_tokens(it.get("parsed", {}).get("on", "")) if t in active]
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in adj}
+    stack, cycles, seen = [], [], set()
+
+    def dfs(n):
+        color[n] = GRAY
+        stack.append(n)
+        for m in adj.get(n, []):
+            if m == n:
+                key = (n,)
+                if key not in seen:
+                    seen.add(key); cycles.append([n])
+            elif color.get(m, BLACK) == GRAY:
+                cyc = stack[stack.index(m):]
+                key = tuple(sorted(cyc))
+                if key not in seen:
+                    seen.add(key); cycles.append(cyc)
+            elif color.get(m, BLACK) == WHITE:
+                dfs(m)
+        stack.pop()
+        color[n] = BLACK
+
+    for n in adj:
+        if color[n] == WHITE:
+            dfs(n)
+    return cycles
+
 def parse_capsule(text):
     """v-intent capsule -> {id, do, in, on, why, ?, !:[], ~:[], =:[], _dupes:[]}. Tolerant.
 
