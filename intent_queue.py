@@ -394,6 +394,13 @@ def _scope(pend, show_all, project):
     others = [it for it in pend if it.get("source") != proj]
     return proj, mine, others
 
+def _print_scope_cycles(items, mine_ids):
+    """Print on: dependency-cycle deadlocks, but only cycles that involve an
+    in-scope capsule (so a multi-project queue doesn't surface other projects')."""
+    for cyc in _find_cycles(items):
+        if any(n in mine_ids for n in cyc):
+            print(f"  ⚠ dependency cycle (deadlock): " + " -> ".join(cyc) + f" -> {cyc[0]}")
+
 def _emit_capsule(nxt):
     print(f"# intent capsule {nxt['id']!r}  (queued {nxt['created'][:16]} from {nxt['source']})")
     naccept = len(nxt.get("parsed", {}).get("=", []))
@@ -441,10 +448,7 @@ def cmd_next(show_all=False, project=None, strict=False, plan_ids=None):
         if dead:
             msg += f"; dead deps (dropped): {', '.join(dead)}"
         print(msg + ")")
-        mine_ids = {it["id"] for it in mine}
-        for cyc in _find_cycles(items):
-            if any(n in mine_ids for n in cyc):
-                print(f"  ⚠ dependency cycle (deadlock): " + " -> ".join(cyc) + f" -> {cyc[0]}")
+        _print_scope_cycles(items, {it["id"] for it in mine})
         return 0
     # 2) No pending in scope -> auto-reclaim the oldest eligible orphan IN SCOPE, so a crashed
     #    capsule resurfaces through ordinary `next` consumption (not a manual reap step).
@@ -583,21 +587,20 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
             for it, _c in ready:
                 print(f"- **{it['id']}** — {it['parsed'].get('do','')[:70]}  "
                       f"(accept: {len(it['parsed'].get('=',[]))} criteria)")
+        if ready and blocked:
+            print()
         if blocked:
-            print(("\n" if ready else "") + "Blocked:")
+            print("Blocked:")
             for it, c in blocked:
                 bits = []
                 if c["waiting"]:
                     bits.append("waiting on " + ", ".join(c["waiting"]))
                 if c["dead"]:
                     bits.append("dead deps (dropped): " + ", ".join(c["dead"]))
-                print(f"- **{it['id']}** — {it['parsed'].get('do','')[:60]}  ({'; '.join(bits)})")
+                print(f"- **{it['id']}** — {it['parsed'].get('do','')[:70]}  ({'; '.join(bits)})")
         for cid, u in notes:
             print(f"  note: {cid}: on: references unknown id {u!r} (non-gating)")
-        mine_ids = {it["id"] for it in mine}
-        for cyc in _find_cycles(items):
-            if any(n in mine_ids for n in cyc):
-                print(f"  ⚠ dependency cycle (deadlock): " + " -> ".join(cyc) + f" -> {cyc[0]}")
+        _print_scope_cycles(items, {it["id"] for it in mine})
         if ready:
             print(f"\nRun `intent-queue next` to drain the oldest ready capsule.")
     elif proj:

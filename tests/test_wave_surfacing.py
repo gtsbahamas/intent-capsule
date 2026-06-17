@@ -194,6 +194,13 @@ class PickupSplit(unittest.TestCase):
         out = self._pickup()
         self.assertIn("dependency cycle", out)
 
+    def test_all_blocked_shows_blocked_section_without_cta(self):
+        iq.save([_cap("a", on="b"), _cap("b", on="a")])  # mutual block, no ready
+        out = self._pickup()
+        self.assertNotIn("Ready now", out)
+        self.assertIn("Blocked", out)
+        self.assertNotIn("Run `intent-queue next`", out)
+
 
 if __name__ == "__main__":
     unittest.main()
