@@ -29,6 +29,8 @@ Usage:
   intent-queue progress <id> --proof "=[i] ..." [...]    # record partial per-criterion progress; stays in_progress
   intent-queue drop <id> --yes
   intent-queue reap [--older-than MIN] [--yes]  # resurface orphaned in_progress -> pending
+  intent-queue export [--file F]                # dump queue as portable JSON (stdout if no --file)
+  intent-queue import [--file F] [--force]      # merge an export by id (skip existing unless --force)
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
 Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
 """
@@ -357,7 +359,8 @@ def _print_rejections(rej):
 
 def read_input(file):
     if file:
-        return open(file).read()
+        with open(file) as f:
+            return f.read()
     if not sys.stdin.isatty():
         data = sys.stdin.read()
         if data.strip():
@@ -727,6 +730,66 @@ def cmd_reap(older_than, yes):
     print(f"\nResurfaced {len(stale)} -> pending.")
     return 0
 
+def cmd_export(file):
+    """Dump the whole queue to a portable JSON envelope (carries schema_version).
+    --file writes a file (+status); otherwise the JSON goes to stdout ALONE so
+    `intent-queue export > backup.json` is clean."""
+    items = load()
+    dump = {"schema_version": SCHEMA_VERSION, "exported_at": now(), "rows": items}
+    text = json.dumps(dump, indent=2)
+    if file:
+        with open(file, "w") as f:
+            f.write(text + "\n")
+        print(f"exported {len(items)} row(s) -> {file}")
+    else:
+        print(text)
+    return 0
+
+def cmd_import(file, force=False):
+    """Load an export envelope and MERGE it by id.
+
+    Collision policy (the ?: gate): an id already in the queue is NEVER silently
+    overwritten — by default it is skipped with a warning; --force replaces it.
+    A dump whose schema_version is NEWER than this tool is refused (can't migrate
+    forward); older/equal dumps are accepted and back-filled on the way in."""
+    raw = read_input(file)
+    if not raw.strip():
+        print("REFUSED — no import data (pass --file or pipe JSON on stdin)."); return 1
+    try:
+        dump = json.loads(raw)
+    except Exception as e:
+        print(f"REFUSED — import data is not valid JSON: {e}"); return 1
+    if not isinstance(dump, dict) or "rows" not in dump:
+        print("REFUSED — not an intent-queue export (missing 'rows')."); return 1
+    dump_ver = dump.get("schema_version")
+    if isinstance(dump_ver, int) and dump_ver > SCHEMA_VERSION:
+        print(f"REFUSED — dump schema_version {dump_ver} is newer than this tool "
+              f"(supports {SCHEMA_VERSION}); upgrade intent-queue."); return 1
+    incoming = [_backfill(r) for r in dump.get("rows", []) if isinstance(r, dict) and r.get("id")]
+    items = load()
+    by_id = {}
+    for it in items:
+        by_id.setdefault(it["id"], []).append(it)
+    added, overwritten, skipped = 0, 0, []
+    for r in incoming:
+        rid = r["id"]
+        if rid not in by_id:
+            items.append(r); by_id[rid] = [r]; added += 1
+            continue
+        unfinished = any(e["status"] in ("pending", "in_progress") for e in by_id[rid])
+        if force:
+            items = [it for it in items if it["id"] != rid]
+            items.append(r); by_id[rid] = [r]; overwritten += 1
+        else:
+            skipped.append((rid, "unfinished" if unfinished else "exists"))
+    save(items)
+    print(f"imported: {added} added"
+          + (f", {overwritten} overwritten (--force)" if overwritten else "")
+          + (f", {len(skipped)} skipped" if skipped else ""))
+    for rid, why in skipped:
+        print(f"  skipped {rid!r} ({why}) — already in queue; re-run with --force to overwrite")
+    return 0
+
 def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     items = load()
     pend = [it for it in items if it["status"] == "pending"]
@@ -832,6 +895,8 @@ def main():
     x = sub.add_parser("drop");  x.add_argument("id"); x.add_argument("--yes", action="store_true")
     r = sub.add_parser("reap"); r.add_argument("--older-than", type=int, default=ORPHAN_MIN)
     r.add_argument("--yes", action="store_true")
+    e = sub.add_parser("export"); e.add_argument("--file")
+    im = sub.add_parser("import"); im.add_argument("--file"); im.add_argument("--force", action="store_true")
     args = ap.parse_args()
     if args.cmd == "add":      return cmd_add(read_input(args.file), args.source)
     if args.cmd == "validate":
@@ -844,6 +909,8 @@ def main():
     if args.cmd == "done":     return cmd_done(args.id, args.proof)
     if args.cmd == "progress": return cmd_progress(args.id, args.proof)
     if args.cmd == "reap":     return cmd_reap(args.older_than, args.yes)
+    if args.cmd == "export":   return cmd_export(args.file)
+    if args.cmd == "import":   return cmd_import(args.file, args.force)
     if args.cmd == "drop":
         if not args.yes:
             print(f"REFUSED — dropping {args.id!r} discards captured intent. If you don't recognize "
