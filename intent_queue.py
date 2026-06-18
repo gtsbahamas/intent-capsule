@@ -26,6 +26,7 @@ Usage:
   intent-queue list [--status pending|active|all]
   intent-queue next [--strict [--plan P]]       # oldest pending -> in_progress, prints capsule; --strict refuses a malformed one
   intent-queue done <id> --proof "..." [--proof "..."]   # one --proof per acceptance criterion, in order
+  intent-queue progress <id> --proof "=[i] ..." [...]    # record partial per-criterion progress; stays in_progress
   intent-queue drop <id> --yes
   intent-queue reap [--older-than MIN] [--yes]  # resurface orphaned in_progress -> pending
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
@@ -481,6 +482,9 @@ def cmd_list(status):
         flag = ""
         if it["status"] == "in_progress" and _age_min(it.get("started")) > ORPHAN_MIN:
             flag = "  ⚠ orphan-suspect"
+        prog = _progress_str(it)
+        if prog:
+            flag += f"  [{prog}]"
         print(f"  [{it['status']:<11}] {it['id']:<22} {it['parsed'].get('do','')[:50]}  "
               f"(src={it['source']}, {it['created'][:16]}){flag}")
     return 0
@@ -637,6 +641,61 @@ def cmd_done(id_, proofs):
     print(f"{id_} -> done{tail}")
     return 0
 
+PROGRESS_RE = re.compile(r"^=\[(\d+)\]\s*(.*)$")   # "=[2] how it was met" -> (2, "how it was met")
+
+def _progress_str(row):
+    """'M/N criteria met' when the row carries partial acceptance progress, else ''."""
+    met = len(row.get("progress") or {})
+    if not met:
+        return ""
+    total = len(row.get("parsed", {}).get("=", []))
+    return f"{met}/{total} criteria met"
+
+def cmd_progress(id_, proofs):
+    """Record per-criterion acceptance progress WITHOUT closing the capsule.
+
+    Additive to the binary done gate: progress is metadata on an in_progress row,
+    it never auto-advances to done, and `done` still re-attests every criterion.
+    Each --proof must name its criterion as '=[i] ...'; calls accumulate."""
+    items = load()
+    target = _select(items, id_)
+    if not target:
+        print(f"(no capsule with id {id_!r})"); return 1
+    criteria = target.get("parsed", {}).get("=", [])
+    if not criteria:
+        print(f"(capsule {id_!r} has no acceptance criteria — nothing to track progress against)")
+        return 1
+    pairs = []
+    for raw in (proofs or []):
+        s = (raw or "").strip()
+        m = PROGRESS_RE.match(s)
+        if not m:
+            print(f"REFUSED — each --proof must name its criterion: --proof \"=[i] how it was met\".\n"
+                  f"  got: {s!r}")
+            return 1
+        idx, att = int(m.group(1)), m.group(2).strip()
+        if idx < 1 or idx > len(criteria):
+            print(f"REFUSED — =[{idx}] out of range; {id_!r} has {len(criteria)} criteria."); return 1
+        if not att:
+            print(f"REFUSED — =[{idx}] has no attestation text."); return 1
+        pairs.append((idx, att))
+    if not pairs:
+        print("REFUSED — nothing to record; pass one or more --proof \"=[i] ...\"."); return 1
+    prog = dict(target.get("progress") or {})
+    for idx, att in pairs:
+        prog[str(idx)] = {"criterion": criteria[idx-1], "attestation": att}
+    target["progress"] = prog
+    if target["status"] == "pending":        # recording progress means work has started
+        target["status"] = "in_progress"; target["started"] = now()
+    _touch(target)
+    save(items)
+    met, total = len(prog), len(criteria)
+    print(f"{id_}: {met}/{total} criteria recorded (status: {target['status']})")
+    if met >= total:
+        print(f"  all criteria recorded — run `intent-queue done {id_} ...` to close "
+              f"(done re-attests each; progress is not an auto-close).")
+    return 0
+
 def cmd_drop(id_):
     items = load()
     target = _select(items, id_)
@@ -671,16 +730,21 @@ def cmd_reap(older_than, yes):
 def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     items = load()
     pend = [it for it in items if it["status"] == "pending"]
-    orphans = [it for it in items if it["status"] == "in_progress"
-               and _age_min(it.get("started")) > ORPHAN_MIN]
-    if not pend and not orphans:
+    inprog = [it for it in items if it["status"] == "in_progress"]
+    # partial: in_progress carrying recorded acceptance progress (any age) — continue these.
+    partial = [it for it in inprog if it.get("progress")]
+    # orphans: in_progress idle past ORPHAN_MIN WITHOUT progress (partial ones show above).
+    orphans = [it for it in inprog if _age_min(it.get("started")) > ORPHAN_MIN and not it.get("progress")]
+    if not pend and not orphans and not partial:
         return 0
     proj, mine, others = _scope(pend, show_all, project)
-    # orphans are scoped the same way (only surface this project's, unless global)
+    # orphans/partial are scoped the same way (only surface this project's, unless global)
     if proj:
         orph_mine = [it for it in orphans if it.get("source") == proj]
+        partial_mine = [it for it in partial if it.get("source") == proj]
     else:
         orph_mine = orphans
+        partial_mine = partial
     scope_label = f"for {proj}" if proj else "(all projects)"
     print(f"## Intent Queue {scope_label} — {len(mine)} pending"
           + (f", {len(orph_mine)} orphaned" if orph_mine else "") + " capsule(s)\n")
@@ -728,6 +792,10 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
             print(f"\nRun `intent-queue next` to drain the oldest ready capsule.")
     elif proj:
         print(f"(none pending for {proj})")
+    if partial_mine:
+        print("\nIn progress (partial — continue, don't restart):")
+        for it in sorted(partial_mine, key=lambda x: x["created"]):
+            print(f"- **{it['id']}** — {_progress_str(it)}  ({it['parsed'].get('do','')[:60]})")
     if orph_mine:
         ids = ", ".join(o["id"] for o in orph_mine)
         print(f"\n⚠ {len(orph_mine)} orphaned in_progress (a prior session drained but never finished): "
@@ -760,6 +828,7 @@ def main():
     p = sub.add_parser("pickup"); p.add_argument("--all", action="store_true"); p.add_argument("--project")
     p.add_argument("--strict", action="store_true"); p.add_argument("--plan")
     d = sub.add_parser("done");  d.add_argument("id"); d.add_argument("--proof", action="append")
+    pr = sub.add_parser("progress"); pr.add_argument("id"); pr.add_argument("--proof", action="append")
     x = sub.add_parser("drop");  x.add_argument("id"); x.add_argument("--yes", action="store_true")
     r = sub.add_parser("reap"); r.add_argument("--older-than", type=int, default=ORPHAN_MIN)
     r.add_argument("--yes", action="store_true")
@@ -773,6 +842,7 @@ def main():
     if args.cmd == "next":     return cmd_next(args.all, args.project, args.strict, load_plan(args.plan))
     if args.cmd == "pickup":   return cmd_pickup(args.all, args.project, args.strict, load_plan(args.plan))
     if args.cmd == "done":     return cmd_done(args.id, args.proof)
+    if args.cmd == "progress": return cmd_progress(args.id, args.proof)
     if args.cmd == "reap":     return cmd_reap(args.older_than, args.yes)
     if args.cmd == "drop":
         if not args.yes:
