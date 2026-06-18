@@ -124,7 +124,18 @@ intent-queue done csv-export --proof "=[1] verified: two filters -> only matchin
                              --proof "=[3] 50k export, button disabled w/ progress, no freeze"
 ```
 
-Other commands: `list [--status pending|active|all]`, `drop <id> --yes`, `reap [--older-than MIN] [--yes]`.
+Other commands: `list [--status pending|active|all]`, `progress <id> --proof "=[i] ..."` (record partial per-criterion progress without closing), `drop <id> --yes`, `reap [--older-than MIN] [--yes]`, `export [--file F]` / `import [--file F] [--force]` (backup + migration), `doctor` (read-only install diagnostic).
+
+### Where the queue lives (marker-gated project-local)
+
+By default the queue is global (`~/.claude/intent-queue.jsonl`). A repo opts into **project-local** storage by creating a `.intent-capsule/` directory — then its capsules live in `<repo>/.intent-capsule/queue.jsonl` and stay isolated from every other project. Resolution precedence (explicit, by design):
+
+1. `INTENT_QUEUE=/abs/path` — explicit override, wins.
+2. `INTENT_QUEUE_GLOBAL=1` — force the shared global queue.
+3. nearest ancestor with a `.intent-capsule/` dir → `<repo>/.intent-capsule/queue.jsonl`.
+4. global `~/.claude/intent-queue.jsonl` — default for repos **without** the marker (unchanged).
+
+Existing global capsules are **never auto-migrated** when you add the marker — `pickup` detects them and prints the `export`/`import` commands to move them deliberately. `intent-queue doctor` reports which mode is active.
 
 ### The contract is enforced at both ends
 - **Capture:** `add` refuses a capsule missing `do:` or acceptance `=:`.

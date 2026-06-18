@@ -33,7 +33,13 @@ Usage:
   intent-queue import [--file F] [--force]      # merge an export by id (skip existing unless --force)
   intent-queue doctor                           # read-only install diagnostic (python3, queue path, plugin, hook)
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
-Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
+Queue path precedence (marker-gated project-local):
+  1. INTENT_QUEUE=/abs/path        explicit override, wins
+  2. INTENT_QUEUE_GLOBAL=1         force the shared global queue
+  3. <repo>/.intent-capsule/queue.jsonl   if an ancestor has a .intent-capsule/ dir (opt-in per repo)
+  4. ~/.claude/intent-queue.jsonl  global default (repos WITHOUT the marker — unchanged)
+Opt a repo into project-local storage by creating a .intent-capsule/ directory;
+existing global capsules are NOT auto-migrated (pickup reports them; use export/import).
 """
 import os, sys, re, json, argparse, subprocess, tempfile, hashlib, contextlib, time, functools
 from collections import namedtuple
@@ -43,7 +49,41 @@ try:
 except ImportError:
     fcntl = None
 
-QUEUE = os.environ.get("INTENT_QUEUE", os.path.expanduser("~/.claude/intent-queue.jsonl"))
+GLOBAL_QUEUE = os.path.expanduser("~/.claude/intent-queue.jsonl")
+
+def _find_marker_root(start=None):
+    """Walk up from `start` (cwd) for a directory containing a .intent-capsule/ dir.
+    Returns that directory, or None if none up to the filesystem root. The marker is
+    .intent-capsule/ ONLY (not .git) so project-local is strictly opt-in per repo."""
+    d = os.path.abspath(start or os.getcwd())
+    while True:
+        if os.path.isdir(os.path.join(d, ".intent-capsule")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+def resolve_queue():
+    """Resolve the queue path by EXPLICIT, documented precedence (marker-gated):
+       1. INTENT_QUEUE env (explicit path) — wins.
+       2. INTENT_QUEUE_GLOBAL truthy — force the shared global queue.
+       3. nearest ancestor with a .intent-capsule/ dir -> <root>/.intent-capsule/queue.jsonl.
+       4. global ~/.claude/intent-queue.jsonl (default; unchanged for repos without the marker).
+    A repo opts INTO project-local storage by creating a .intent-capsule/ directory;
+    nothing migrates automatically (existing global capsules are detected and reported,
+    not moved — see _global_capsule_notice)."""
+    env = os.environ.get("INTENT_QUEUE")
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    if os.environ.get("INTENT_QUEUE_GLOBAL"):
+        return GLOBAL_QUEUE
+    root = _find_marker_root(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    if root:
+        return os.path.join(root, ".intent-capsule", "queue.jsonl")
+    return GLOBAL_QUEUE
+
+QUEUE = resolve_queue()
 SINGLE = {"do","in","on","needs","group","why","?"}   # at most one
 REPEAT = {"!","~","="}                          # zero or more -> list
 REQUIRED = ["id","do","="]                      # the anti-omission contract
@@ -860,8 +900,13 @@ def cmd_doctor():
     wired, hook_detail = _hook_wired()
     root = _find_plugin_root()
     writable = _writable_dir(QUEUE)
+    mode = ("INTENT_QUEUE override" if os.environ.get("INTENT_QUEUE")
+            else "global (INTENT_QUEUE_GLOBAL)" if os.environ.get("INTENT_QUEUE_GLOBAL")
+            else "project-local (.intent-capsule/)" if QUEUE != GLOBAL_QUEUE
+            else "global default")
     checks = [  # (label, ok, detail, critical)
         ("python3", True, f"{sys.version.split()[0]} ({sys.executable})", True),
+        ("queue resolution", True, mode, False),
         ("queue path writable", writable,
          f"{QUEUE} — dir {'writable' if writable else 'NOT writable/ missing'}", True),
         ("plugin root", bool(root),
@@ -939,6 +984,29 @@ def cmd_import(file, force=False):
         print(f"  skipped {rid!r} ({why}) — already in queue; re-run with --force to overwrite")
     return 0
 
+def _global_capsule_notice():
+    """If we've resolved to a project-local queue but the GLOBAL queue still holds
+    unfinished capsules for this project, return a migration hint (we never move them
+    automatically — the capsule contract forbids silent migration)."""
+    if QUEUE == GLOBAL_QUEUE or not os.path.exists(GLOBAL_QUEUE):
+        return None
+    proj = current_project()
+    if not proj:
+        return None
+    try:
+        with open(GLOBAL_QUEUE) as f:
+            rows = [json.loads(l) for l in f if l.strip()]
+    except (OSError, ValueError):
+        return None
+    mine = [r for r in rows if r.get("source") == proj
+            and r.get("status") in ("pending", "in_progress")]
+    if not mine:
+        return None
+    return (f"\nℹ {len(mine)} capsule(s) for {proj!r} still live in the GLOBAL queue "
+            f"({GLOBAL_QUEUE}).\n  They are NOT auto-migrated. To move them into this "
+            f"project-local queue:\n    INTENT_QUEUE_GLOBAL=1 intent-queue export --file "
+            f"/tmp/{proj}-capsules.json\n    intent-queue import --file /tmp/{proj}-capsules.json")
+
 def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     items = load()
     pend = [it for it in items if it["status"] == "pending"]
@@ -947,7 +1015,10 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
     partial = [it for it in inprog if it.get("progress")]
     # orphans: in_progress idle past ORPHAN_MIN WITHOUT progress (partial ones show above).
     orphans = [it for it in inprog if _age_min(it.get("started")) > ORPHAN_MIN and not it.get("progress")]
+    notice = _global_capsule_notice()
     if not pend and not orphans and not partial:
+        if notice:
+            print(notice)
         return 0
     proj, mine, others = _scope(pend, show_all, project)
     # orphans/partial are scoped the same way (only surface this project's, unless global)
@@ -1026,6 +1097,8 @@ def cmd_pickup(show_all=False, project=None, strict=False, plan_ids=None):
                 print(f"  {it['id']}: " + "; ".join(x.reason for x in r))
         else:
             print("\n✓ strict: all pending capsules pass the deterministic validator.")
+    if notice:
+        print(notice)
     return 0
 
 def main():
