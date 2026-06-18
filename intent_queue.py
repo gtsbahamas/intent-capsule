@@ -31,6 +31,7 @@ Usage:
   intent-queue reap [--older-than MIN] [--yes]  # resurface orphaned in_progress -> pending
   intent-queue export [--file F]                # dump queue as portable JSON (stdout if no --file)
   intent-queue import [--file F] [--force]      # merge an export by id (skip existing unless --force)
+  intent-queue doctor                           # read-only install diagnostic (python3, queue path, plugin, hook)
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
 Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
 """
@@ -730,6 +731,62 @@ def cmd_reap(older_than, yes):
     print(f"\nResurfaced {len(stale)} -> pending.")
     return 0
 
+def _writable_dir(path):
+    """True if path's containing directory exists and is writable."""
+    d = os.path.dirname(path) or "."
+    return os.path.isdir(d) and os.access(d, os.W_OK)
+
+def _find_plugin_root():
+    """Plugin root: CLAUDE_PLUGIN_ROOT if set, else this file's dir if it has .claude-plugin/."""
+    env = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if env and os.path.isdir(env):
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    return here if os.path.isdir(os.path.join(here, ".claude-plugin")) else None
+
+def _hook_wired():
+    """(wired, detail): is the surfacing hook configured? Read-only best-effort —
+    looks for an intent_queue pickup command in the plugin's hooks/hooks.json."""
+    root = _find_plugin_root()
+    if not root:
+        return False, "plugin root not found"
+    hj = os.path.join(root, "hooks", "hooks.json")
+    if not os.path.exists(hj):
+        return False, f"no hooks.json at {hj}"
+    try:
+        with open(hj) as f:
+            txt = f.read()
+    except OSError as e:
+        return False, f"unreadable: {e}"
+    if "pickup" in txt and "intent_queue" in txt:
+        return True, hj
+    return False, f"{hj} present but no intent_queue pickup command"
+
+def cmd_doctor():
+    """Read-only install diagnostic. Never mutates the queue. Non-zero exit if a
+    CRITICAL check (python3, writable queue path) fails; others are informational."""
+    print("intent-queue doctor\n")
+    wired, hook_detail = _hook_wired()
+    root = _find_plugin_root()
+    writable = _writable_dir(QUEUE)
+    checks = [  # (label, ok, detail, critical)
+        ("python3", True, f"{sys.version.split()[0]} ({sys.executable})", True),
+        ("queue path writable", writable,
+         f"{QUEUE} — dir {'writable' if writable else 'NOT writable/ missing'}", True),
+        ("plugin root", bool(root),
+         root or "not found (CLAUDE_PLUGIN_ROOT unset and no .claude-plugin/)", False),
+        ("surfacing hook wired", wired, hook_detail, False),
+    ]
+    crit_fail = False
+    for label, ok, detail, critical in checks:
+        tag = "OK  " if ok else ("FAIL" if critical else "WARN")
+        crit_fail = crit_fail or (not ok and critical)
+        print(f"  [{tag}] {label}: {detail}")
+    print()
+    if crit_fail:
+        print("doctor: FAIL — a critical check failed."); return 1
+    print("doctor: OK"); return 0
+
 def cmd_export(file):
     """Dump the whole queue to a portable JSON envelope (carries schema_version).
     --file writes a file (+status); otherwise the JSON goes to stdout ALONE so
@@ -897,6 +954,7 @@ def main():
     r.add_argument("--yes", action="store_true")
     e = sub.add_parser("export"); e.add_argument("--file")
     im = sub.add_parser("import"); im.add_argument("--file"); im.add_argument("--force", action="store_true")
+    sub.add_parser("doctor")
     args = ap.parse_args()
     if args.cmd == "add":      return cmd_add(read_input(args.file), args.source)
     if args.cmd == "validate":
@@ -911,6 +969,7 @@ def main():
     if args.cmd == "reap":     return cmd_reap(args.older_than, args.yes)
     if args.cmd == "export":   return cmd_export(args.file)
     if args.cmd == "import":   return cmd_import(args.file, args.force)
+    if args.cmd == "doctor":   return cmd_doctor()
     if args.cmd == "drop":
         if not args.yes:
             print(f"REFUSED — dropping {args.id!r} discards captured intent. If you don't recognize "
