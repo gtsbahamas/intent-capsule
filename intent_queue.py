@@ -35,9 +35,13 @@ Usage:
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
 Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
 """
-import os, sys, re, json, argparse, subprocess, tempfile, hashlib
+import os, sys, re, json, argparse, subprocess, tempfile, hashlib, contextlib, time, functools
 from collections import namedtuple
 from datetime import datetime, timezone
+try:
+    import fcntl                                   # POSIX advisory locks; absent on Windows
+except ImportError:
+    fcntl = None
 
 QUEUE = os.environ.get("INTENT_QUEUE", os.path.expanduser("~/.claude/intent-queue.jsonl"))
 SINGLE = {"do","in","on","needs","group","why","?"}   # at most one
@@ -423,6 +427,87 @@ def save(items):
     except OSError:
         pass
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-process locking — serialize the WHOLE read-modify-write.
+#
+# save() is atomic per-write (os.replace), but a mutator does load -> mutate ->
+# save as separate steps. Two racing sessions (two Claude windows + the SessionStart
+# hook all touch one queue) can both load, both append, and the second save clobbers
+# the first — a capsule silently lost. The fix is an advisory lock held across the
+# entire mutator body, not just the write.
+LOCK_TIMEOUT = float(os.environ.get("INTENT_QUEUE_LOCK_TIMEOUT", "10"))  # seconds to wait
+LOCK_STALE   = 300                                # lockfile older than this (s) is presumed crashed (fallback path only)
+
+class QueueLocked(RuntimeError):
+    """Raised when the queue lock can't be acquired within LOCK_TIMEOUT."""
+
+@contextlib.contextmanager
+def _queue_lock():
+    """Exclusive advisory lock around a whole read-modify-write of the queue.
+
+    Uses fcntl.flock where available (the kernel auto-releases it if the holder
+    crashes, so no stale lock can deadlock the next call). Falls back to an
+    O_CREAT|O_EXCL lockfile with stale-lock breaking where fcntl is absent
+    (Windows). Always released via try/finally; raises QueueLocked on timeout."""
+    lockpath = QUEUE + ".lock"
+    d = os.path.dirname(lockpath) or "."
+    os.makedirs(d, exist_ok=True)
+    if fcntl is not None:
+        f = open(lockpath, "w")
+        try:
+            end = time.monotonic() + LOCK_TIMEOUT
+            while True:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= end:
+                        raise QueueLocked(f"queue locked by another process (>{LOCK_TIMEOUT:g}s): {lockpath}")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        finally:
+            f.close()
+    else:
+        end = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fd = os.open(lockpath, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                break
+            except FileExistsError:
+                try:                                 # stale-lock break: reclaim a crashed holder's lockfile
+                    if time.time() - os.path.getmtime(lockpath) > LOCK_STALE:
+                        os.unlink(lockpath); continue
+                except OSError:
+                    pass
+                if time.monotonic() >= end:
+                    raise QueueLocked(f"queue locked by another process (>{LOCK_TIMEOUT:g}s): {lockpath}")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                os.unlink(lockpath)
+            except OSError:
+                pass
+
+def locked(fn):
+    """Run a mutator under _queue_lock() so its load->mutate->save is atomic across
+    processes. On timeout, print the QueueLocked message and return 1 (no traceback)."""
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        try:
+            with _queue_lock():
+                return fn(*a, **k)
+        except QueueLocked as e:
+            print(f"REFUSED — {e}")
+            return 1
+    return wrapper
+
 def cmd_validate(text, strict=False, plan_ids=None):
     parsed = parse_capsule(text)
     errs, warns = check(parsed)
@@ -445,6 +530,7 @@ def _store_parsed(parsed):
     """Strip transient keys before persisting the parsed capsule."""
     return {k: v for k, v in parsed.items() if not k.startswith("_")}
 
+@locked
 def cmd_add(text, source):
     parsed, errs, _, _ = cmd_validate(text)
     if errs:
@@ -536,6 +622,7 @@ def _strict_gate(nxt, strict, plan_ids):
         return True
     return False
 
+@locked
 def cmd_next(show_all=False, project=None, strict=False, plan_ids=None):
     items = load()
     pend = [it for it in items if it["status"] == "pending"]
@@ -611,6 +698,7 @@ def _select(items, id_):
     any_ = [it for it in items if it["id"] == id_]
     return any_[0] if any_ else None
 
+@locked
 def cmd_done(id_, proofs):
     items = load()
     target = _select(items, id_)
@@ -655,6 +743,7 @@ def _progress_str(row):
     total = len(row.get("parsed", {}).get("=", []))
     return f"{met}/{total} criteria met"
 
+@locked
 def cmd_progress(id_, proofs):
     """Record per-criterion acceptance progress WITHOUT closing the capsule.
 
@@ -700,6 +789,7 @@ def cmd_progress(id_, proofs):
               f"(done re-attests each; progress is not an auto-close).")
     return 0
 
+@locked
 def cmd_drop(id_):
     items = load()
     target = _select(items, id_)
@@ -710,6 +800,7 @@ def cmd_drop(id_):
     print(f"{id_} -> dropped")
     return 0
 
+@locked
 def cmd_reap(older_than, yes):
     items = load()
     stale = [it for it in items if it["status"] == "in_progress"
@@ -802,6 +893,7 @@ def cmd_export(file):
         print(text)
     return 0
 
+@locked
 def cmd_import(file, force=False):
     """Load an export envelope and MERGE it by id.
 
