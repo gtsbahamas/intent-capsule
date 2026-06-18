@@ -19,9 +19,15 @@ import intent_queue as iq  # noqa: E402
 
 
 def _items():
+    # realistic post-v1 rows (carry the schema fields) so load()'s back-fill is a
+    # no-op and round-trip equality holds
     return [
-        {"id": "a", "status": "pending", "do": "first"},
-        {"id": "b", "status": "done", "do": "second", "nested": {"x": [1, 2]}},
+        {"id": "a", "status": "pending", "do": "first",
+         "schema_version": iq.SCHEMA_VERSION, "updated_at": "2026-06-17T00:00:00+00:00",
+         "completed_by": None, "source_path_hash": "abc123def456"},
+        {"id": "b", "status": "done", "do": "second", "nested": {"x": [1, 2]},
+         "schema_version": iq.SCHEMA_VERSION, "updated_at": "2026-06-17T00:00:00+00:00",
+         "completed_by": "tester", "source_path_hash": "0011223344ff"},
     ]
 
 

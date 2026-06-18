@@ -31,7 +31,7 @@ Usage:
   intent-queue pickup                           # fresh-session startup view (pending + orphans)
 Env: INTENT_QUEUE=/path/to/queue.jsonl  (default ~/.claude/intent-queue.jsonl)
 """
-import os, sys, re, json, argparse, subprocess, tempfile
+import os, sys, re, json, argparse, subprocess, tempfile, hashlib
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -42,8 +42,30 @@ REQUIRED = ["id","do","="]                      # the anti-omission contract
 RECOMMENDED = ["in","why"]
 TAG_RE = re.compile(r"^(do|in|on|needs|group|why|[!~?=]):\s*(.*)$")
 ORPHAN_MIN = 120                                 # in_progress older than this (min) is reap-eligible
+SCHEMA_VERSION = 1                               # row-shape version; bump intentionally when fields change
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+def _actor():
+    """Best-effort actor/agent name for completion provenance; None when unknown.
+    INTENT_ACTOR lets a caller (a Claude session, a CI job) self-identify."""
+    return os.environ.get("INTENT_ACTOR") or None
+
+def _project_path():
+    """Absolute path of the current project dir (CLAUDE_PROJECT_DIR or cwd)."""
+    return os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+def _path_hash(path):
+    """Stable short hash of an absolute path — identical dirs collide, different ones don't.
+    None in -> None out (legacy rows whose origin path is unknowable)."""
+    if not path:
+        return None
+    return hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:12]
+
+def _touch(row):
+    """Stamp updated_at on any mutation. Returns the row for chaining."""
+    row["updated_at"] = now()
+    return row
 
 def _age_min(iso):
     """Age in minutes of an ISO timestamp; +inf if missing/unparseable (=> treat as stale)."""
@@ -344,11 +366,21 @@ def read_input(file):
     except Exception:
         return ""
 
+def _backfill(row):
+    """Add v1 schema fields to a legacy row with safe defaults — never KeyErrors.
+    schema_version 0 marks a row that predates the schema (back-filled on load);
+    updated_at falls back to created; origin path/actor are unknowable -> None."""
+    row.setdefault("schema_version", 0)
+    row.setdefault("updated_at", row.get("created"))
+    row.setdefault("completed_by", None)
+    row.setdefault("source_path_hash", None)
+    return row
+
 def load():
     if not os.path.exists(QUEUE):
         return []
     with open(QUEUE) as f:
-        return [json.loads(l) for l in f if l.strip()]
+        return [_backfill(json.loads(l)) for l in f if l.strip()]
 
 def save(items):
     """Atomically replace the queue file.
@@ -424,7 +456,10 @@ def cmd_add(text, source):
     if any(it["id"] == parsed["id"] and it["status"] in ("pending","in_progress") for it in items):
         print(f"\nREJECTED — id {parsed['id']!r} already queued and unfinished.")
         return 1
-    items.append({"id": parsed["id"], "status": "pending", "created": now(),
+    ts = now()
+    items.append({"id": parsed["id"], "status": "pending", "created": ts,
+                  "schema_version": SCHEMA_VERSION, "updated_at": ts,
+                  "completed_by": None, "source_path_hash": _path_hash(_project_path()),
                   "source": source or current_project() or "unknown", "capsule": text.strip(),
                   "parsed": _store_parsed(parsed),
                   "started": None, "done": None, "proof": None})
@@ -505,7 +540,7 @@ def cmd_next(show_all=False, project=None, strict=False, plan_ids=None):
             nxt = sorted(ready, key=lambda x: x["created"])[0]
             if _strict_gate(nxt, strict, plan_ids):
                 return 1                                     # blocked; status untouched (not saved)
-            nxt["status"] = "in_progress"; nxt["started"] = now()
+            nxt["status"] = "in_progress"; nxt["started"] = now(); _touch(nxt)
             save(items)
             _emit_capsule(nxt)
             return 0
@@ -538,7 +573,7 @@ def cmd_next(show_all=False, project=None, strict=False, plan_ids=None):
             return 1                                         # blocked; orphan left as-is
         idle = _age_min(nxt.get("started"))
         idle_s = "unknown" if idle == float("inf") else f"{int(idle)}m"
-        nxt["started"] = now()   # re-stamp: this session owns the clock now
+        nxt["started"] = now(); _touch(nxt)   # re-stamp: this session owns the clock now
         save(items)
         print(f"# ♻ RESURFACED orphaned capsule {nxt['id']!r} (idle {idle_s} — a prior session "
               f"drained it but never finished; you now own it)")
@@ -595,6 +630,7 @@ def cmd_done(id_, proofs):
         # no criteria: a free-text note is optional
         target["proof"] = " | ".join(p for p in clean if p) or None
     target["status"] = "done"; target["done"] = now()
+    target["completed_by"] = _actor(); _touch(target)
     save(items)
     n = len(criteria)
     tail = f"  ({n}/{n} criteria attested)" if n else ("  (note recorded)" if target["proof"] else "")
@@ -606,7 +642,7 @@ def cmd_drop(id_):
     target = _select(items, id_)
     if not target:
         print(f"(no capsule with id {id_!r})"); return 1
-    target["status"] = "dropped"; target["done"] = now()
+    target["status"] = "dropped"; target["done"] = now(); _touch(target)
     save(items)
     print(f"{id_} -> dropped")
     return 0
@@ -627,7 +663,7 @@ def cmd_reap(older_than, yes):
         print(f"\nDry run. Re-run with --yes to flip these back to pending.")
         return 0
     for it in stale:
-        it["status"] = "pending"; it["started"] = None
+        it["status"] = "pending"; it["started"] = None; _touch(it)
     save(items)
     print(f"\nResurfaced {len(stale)} -> pending.")
     return 0
