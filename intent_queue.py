@@ -22,9 +22,9 @@ Grammar:
 
 Usage:
   intent-queue add [--source S] [--file F]      # F, else stdin, else clipboard (pbpaste)
-  intent-queue validate [--file F] [--strict [--plan P]]   # completeness; --strict adds the deterministic plan-ops gate
+  intent-queue validate [--file F] [--strict-planops [--plan P]]   # completeness (always); --strict-planops ADDS the deterministic PLAN-OPS gate only — NOT a full capsule lint. (--strict = alias)
   intent-queue list [--status pending|active|all]
-  intent-queue next [--strict [--plan P]]       # oldest pending -> in_progress, prints capsule; --strict refuses a malformed one
+  intent-queue next [--strict-planops [--plan P]]   # oldest ready -> in_progress; --strict-planops refuses a malformed PLAN-OPS capsule (not a completeness lint)
   intent-queue done <id> --proof "..." [--proof "..."]   # one --proof per acceptance criterion, in order
   intent-queue progress <id> --proof "=[i] ..." [...]    # record partial per-criterion progress; stays in_progress
   intent-queue drop <id> --yes
@@ -1032,13 +1032,24 @@ def main():
     ap = argparse.ArgumentParser(prog="intent-queue")
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add");      a.add_argument("--source"); a.add_argument("--file")
-    v = sub.add_parser("validate"); v.add_argument("--file")
-    v.add_argument("--strict", action="store_true"); v.add_argument("--plan")
+    STRICT_HELP = ("run the deterministic PLAN-OPS gate only (self-dep / unknown-id / "
+                   "op-char-id / dup-id); it does NOT lint v-intent capsule completeness "
+                   "— that is always checked. --strict is a back-compat alias.")
+    v = sub.add_parser("validate",
+        description="Check capsule completeness (required fields are always checked). "
+                    "--strict-planops ADDS the deterministic plan-ops grammar gate; it is NOT "
+                    "a full capsule lint — it only catches the four plan-ops failure modes "
+                    "(self-dep, unknown-id, op-char-id, dup-id).")
+    v.add_argument("--file")
+    v.add_argument("--strict-planops", "--strict", dest="strict", action="store_true", help=STRICT_HELP)
+    v.add_argument("--plan")
     l = sub.add_parser("list");     l.add_argument("--status", default="active")
     n = sub.add_parser("next");   n.add_argument("--all", action="store_true"); n.add_argument("--project")
-    n.add_argument("--strict", action="store_true"); n.add_argument("--plan")
+    n.add_argument("--strict-planops", "--strict", dest="strict", action="store_true", help=STRICT_HELP)
+    n.add_argument("--plan")
     p = sub.add_parser("pickup"); p.add_argument("--all", action="store_true"); p.add_argument("--project")
-    p.add_argument("--strict", action="store_true"); p.add_argument("--plan")
+    p.add_argument("--strict-planops", "--strict", dest="strict", action="store_true", help=STRICT_HELP)
+    p.add_argument("--plan")
     d = sub.add_parser("done");  d.add_argument("id"); d.add_argument("--proof", action="append")
     pr = sub.add_parser("progress"); pr.add_argument("id"); pr.add_argument("--proof", action="append")
     x = sub.add_parser("drop");  x.add_argument("id"); x.add_argument("--yes", action="store_true")
