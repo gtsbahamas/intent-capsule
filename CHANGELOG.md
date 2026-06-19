@@ -3,6 +3,31 @@
 All notable changes to intent-capsule are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow semver.
 
+## [0.3.0] — 2026-06-19
+
+Verification release. Adds the independent grader half of the capsule loop.
+Backward-compatible: existing queues load unchanged, and the new `verification`
+key needs no migration (rows are open dicts, round-trip preserved).
+
+### Added
+- **`verify`** — `intent-queue verify <id> --verdict "=[i] PASS|FAIL L<n>: evidence"`
+  records a cold, independent acceptance check of a **done** capsule. Where `done`
+  captures the builder's self-attested `proof`, `verify` lets a fresh session
+  re-derive a PASS/FAIL verdict per `=` criterion from real evidence, each tagged
+  with an evidence level (L0-L9). It writes **only** a separate top-level
+  `verification` record (`verified`, `verdicts` carrying criterion/verdict/level/
+  evidence, `verified_by`, `verified_at`) and never mutates a builder-owned field
+  (`do`/`in`/`=`/`proof`/`status`/`done`), so "what was claimed" and "what was
+  independently confirmed" stay distinct signals.
+- **Non-rubber-stamp gate** (same spirit as `done`) — one `--verdict` per criterion,
+  refusing short/over/blank/duplicate sets with a per-criterion summary block.
+- **Independence guard** — refuses when `INTENT_ACTOR` equals the capsule's
+  `completed_by` ("a builder cannot grade its own work"). Best-effort by design:
+  the actor id is env-driven, so this catches the obvious same-actor case; true
+  fresh-session independence is a workflow norm, not Python-provable. `verify` runs
+  only on a `done` capsule, under the same cross-process lock as every mutator, and
+  exits non-zero when any criterion is `FAIL`.
+
 ## [0.2.0] — 2026-06-17
 
 Queue-hardening release. Backward-compatible: existing queues load unchanged, and
