@@ -27,6 +27,7 @@ Usage:
   intent-queue next [--strict-planops [--plan P]]   # oldest ready -> in_progress; --strict-planops refuses a malformed PLAN-OPS capsule (not a completeness lint)
   intent-queue done <id> --proof "..." [--proof "..."]   # one --proof per acceptance criterion, in order
   intent-queue progress <id> --proof "=[i] ..." [...]    # record partial per-criterion progress; stays in_progress
+  intent-queue verify <id> --verdict "=[i] PASS|FAIL L<n>: evidence" [...]  # cold, independent acceptance check of a DONE capsule
   intent-queue drop <id> --yes
   intent-queue reap [--older-than MIN] [--yes]  # resurface orphaned in_progress -> pending
   intent-queue export [--file F]                # dump queue as portable JSON (stdout if no --file)
@@ -829,6 +830,78 @@ def cmd_progress(id_, proofs):
               f"(done re-attests each; progress is not an auto-close).")
     return 0
 
+# "=[2] PASS L4: curl returned 201" -> (2, "PASS", 4, "curl returned 201")
+VERDICT_RE = re.compile(r"^=\[(\d+)\]\s*(PASS|FAIL)\s+L(\d+)\s*:\s*(.*)$", re.IGNORECASE)
+
+@locked
+def cmd_verify(id_, verdicts):
+    """Cold, INDEPENDENT acceptance verification — the grader half of the capsule loop.
+
+    `done` records the BUILDER's self-attested proof strings; nobody re-checks them.
+    `verify` is run by a fresh session (ideally a different actor) that re-derives a
+    PASS/FAIL verdict per `=` criterion from real evidence, each tagged with a
+    verification.md evidence level (L0-L9). It writes ONLY a top-level `verification`
+    object and never touches a builder-owned field (do/in/=/proof/status/done), so the
+    two signals — what was claimed vs. what was independently confirmed — stay distinct."""
+    items = load()
+    target = _select(items, id_)
+    if not target:
+        print(f"(no capsule with id {id_!r})"); return 1
+    # you verify BUILT work, not pending work
+    if target["status"] != "done":
+        print(f"REFUSED — {id_!r} is {target['status']!r}, not 'done'. Verify built work: "
+              f"finish + `done` it first, then verify."); return 1
+    # independence guard — a builder cannot grade its own work (best-effort: actor id
+    # is env-driven, so this catches the obvious same-actor case; true fresh-session
+    # independence is a workflow norm, enforced by the plugin/hook, not provable here)
+    actor = _actor()
+    if actor and actor == target.get("completed_by"):
+        print(f"REFUSED — a builder cannot grade its own work; run verify from a fresh "
+              f"session (INTENT_ACTOR {actor!r} both built and is verifying {id_!r})."); return 1
+    criteria = target.get("parsed", {}).get("=", [])
+    if not criteria:
+        print(f"(capsule {id_!r} has no acceptance criteria to verify)"); return 1
+    n = len(criteria)
+    # parse: each --verdict must name its criterion as "=[i] PASS|FAIL L<n>: evidence"
+    parsed = {}   # idx -> (verdict, level, evidence)
+    for raw in (verdicts or []):
+        s = (raw or "").strip()
+        m = VERDICT_RE.match(s)
+        if not m:
+            print(f"REFUSED — each --verdict must read `=[i] PASS|FAIL L<n>: evidence` "
+                  f"(L<n> = evidence level 0-9).\n  got: {s!r}"); return 1
+        idx, verdict, lvl, ev = int(m.group(1)), m.group(2).upper(), int(m.group(3)), m.group(4).strip()
+        if idx < 1 or idx > n:
+            print(f"REFUSED — =[{idx}] out of range; {id_!r} has {n} criteria."); return 1
+        if idx in parsed:
+            print(f"REFUSED — =[{idx}] supplied twice; one verdict per criterion."); return 1
+        if not ev:
+            print(f"REFUSED — =[{idx}] has no evidence text."); return 1
+        parsed[idx] = (verdict, lvl, ev)
+    # completeness gate — same spirit as cmd_done: every criterion attested, no rubber-stamp
+    if len(parsed) != n:
+        print(f"REFUSED — {id_!r} has {n} acceptance criteria. `verify` records an evidence-backed "
+              f"verdict for EACH; one --verdict per criterion. It is not a rubber-stamp.\n")
+        for i, c in enumerate(criteria, 1):
+            v = parsed.get(i)
+            print(f"  =[{i}] {c}")
+            print(f"        {('verdict: ' + v[0] + ' L%d: ' % v[1] + v[2]) if v else '[MISSING]'}")
+        example = " ".join(f'--verdict "=[{i}] PASS L4: evidence"' for i in range(1, n+1))
+        print(f"\nRe-run with one --verdict per criterion:\n  intent-queue verify {id_} {example}")
+        return 1
+    verdicts_out = [{"criterion": criteria[i-1], "verdict": parsed[i][0],
+                     "level": parsed[i][1], "evidence": parsed[i][2]} for i in range(1, n+1)]
+    verified = all(v["verdict"] == "PASS" for v in verdicts_out)
+    target["verification"] = {"verified": verified, "verdicts": verdicts_out,
+                              "verified_by": actor, "verified_at": now()}
+    _touch(target)
+    save(items)
+    npass = sum(1 for v in verdicts_out if v["verdict"] == "PASS")
+    print(f"{id_} -> {'VERIFIED' if verified else 'VERIFICATION FAILED'} ({npass}/{n} criteria PASS)")
+    for i, v in enumerate(verdicts_out, 1):
+        print(f"  =[{i}] {v['verdict']} L{v['level']}: {v['evidence']}")
+    return 0 if verified else 1
+
 @locked
 def cmd_drop(id_):
     items = load()
@@ -1125,6 +1198,11 @@ def main():
     p.add_argument("--plan")
     d = sub.add_parser("done");  d.add_argument("id"); d.add_argument("--proof", action="append")
     pr = sub.add_parser("progress"); pr.add_argument("id"); pr.add_argument("--proof", action="append")
+    vy = sub.add_parser("verify",
+        description="Cold, independent acceptance verification: record an evidence-backed "
+                    "PASS|FAIL verdict per = criterion of a DONE capsule. Writes a separate "
+                    "`verification` record; never mutates builder-owned fields.")
+    vy.add_argument("id"); vy.add_argument("--verdict", action="append")
     x = sub.add_parser("drop");  x.add_argument("id"); x.add_argument("--yes", action="store_true")
     r = sub.add_parser("reap"); r.add_argument("--older-than", type=int, default=ORPHAN_MIN)
     r.add_argument("--yes", action="store_true")
@@ -1142,6 +1220,7 @@ def main():
     if args.cmd == "pickup":   return cmd_pickup(args.all, args.project, args.strict, load_plan(args.plan))
     if args.cmd == "done":     return cmd_done(args.id, args.proof)
     if args.cmd == "progress": return cmd_progress(args.id, args.proof)
+    if args.cmd == "verify":   return cmd_verify(args.id, args.verdict)
     if args.cmd == "reap":     return cmd_reap(args.older_than, args.yes)
     if args.cmd == "export":   return cmd_export(args.file)
     if args.cmd == "import":   return cmd_import(args.file, args.force)
